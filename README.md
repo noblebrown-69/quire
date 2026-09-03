@@ -29,6 +29,8 @@ Quire is the Linux-native version of that binder: small, portable, yours. The pr
 
 **Import.** File → Import… (or the binder menu) turns `.html`, `.md`, `.txt`, and `.docx` into scenes.
 
+**Scrivener.** File → Import Scrivener Project copies a `.scriv` binder into a new `.qr` (chapters, scenes, research notes, compile-include flags). The original project is left untouched.
+
 **Focus.** F11 hides the binder and the format toolbar. Escape comes back. Ctrl+PageUp / Ctrl+PageDown (or Alt+Left / Alt+Right) move to the previous/next scene even while focused.
 
 **Recent.** File → Open Recent remembers eight projects.
@@ -84,6 +86,6 @@ If CMake cannot find WebEngineWidgets: `sudo apt install qt6-webengine-dev`.
 
 ## Status
 
-0.3.12. Usable for a real draft. Binder, compile, and the page have been proven on a running binary; weekend is for living in it.
+0.3.13. Usable for a real draft. Binder, compile, and the page have been proven on a running binary; weekend is for living in it.
 
 Not a corkboard. Not a port of someone else’s app. Linux first.

@@ -48,6 +48,7 @@ private slots:
     void onNewScene();
     void onNewNote();
     void onImport();
+    void onImportScrivener();
     void onFind();
     void onFindNext();
     void onFindPrevious();
@@ -175,6 +176,7 @@ private:
     QAction *m_newSceneAction = nullptr;
     QAction *m_newNoteAction = nullptr;
     QAction *m_importAction = nullptr;
+    QAction *m_importScrivenerAction = nullptr;
     QAction *m_boldAction = nullptr;
     QAction *m_italicAction = nullptr;
     QAction *m_underlineAction = nullptr;

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include "QuireFrame.h"
+#include "ScrivenerImport.h"
 
 static bool isExistingFile(const QByteArray &path)
 {
@@ -88,19 +89,35 @@ static void setupWebEnginePrefix()
 int main(int argc, char *argv[])
 {
     bool listen = false;
+    bool importScriv = false;
+    QByteArray importIn;
+    QByteArray importOut;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
-            std::fprintf(stdout, "Usage: Quire [--listen]\n");
+            std::fprintf(stdout, "Usage: Quire [--listen] [--import-scriv IN.scriv OUT.qr]\n");
             std::fprintf(stdout, "  --listen   load editor, compile Kindle DOCX fixture, print health, quit\n");
+            std::fprintf(stdout, "  --import-scriv IN.scriv OUT.qr   copy Scrivener binder into a new .qr and exit\n");
             return 0;
         }
-        if (std::strcmp(argv[i], "--listen") == 0)
+        if (std::strcmp(argv[i], "--listen") == 0) {
             listen = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--import-scriv") == 0) {
+            if (i + 2 >= argc) {
+                std::fprintf(stderr, "Quire: --import-scriv requires IN.scriv and OUT.qr\n");
+                return 1;
+            }
+            importScriv = true;
+            importIn = argv[++i];
+            importOut = argv[++i];
+            continue;
+        }
     }
 
     setupWebEnginePrefix();
 
-    if (listen) {
+    if (listen && !importScriv) {
         const QByteArray we = qgetenv("QTWEBENGINEPROCESS_PATH");
         std::fprintf(stdout, "webengine: %s\n", we.isEmpty() ? "(unset)" : we.constData());
         std::fflush(stdout);
@@ -108,9 +125,27 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("Quire"));
-    app.setApplicationVersion(QStringLiteral("0.3.12"));
+    app.setApplicationVersion(QStringLiteral("0.3.13"));
     app.setOrganizationName(QStringLiteral("Sociopathletic"));
     app.setOrganizationDomain(QStringLiteral("sociopathletic.com"));
+
+    if (importScriv) {
+        ScrivenerImportResult result;
+        const QString inPath = QString::fromLocal8Bit(importIn);
+        const QString outPath = QString::fromLocal8Bit(importOut);
+        const bool ok = ScrivenerImport::importProject(inPath, outPath, &result);
+        const QString inName = result.inName.isEmpty() ? QFileInfo(inPath).fileName() : result.inName;
+        const QString outName = result.outName.isEmpty() ? QFileInfo(outPath).fileName() : result.outName;
+        std::fprintf(stdout,
+                     "import-scriv: in=%s  out=%s  scenes=%d  folders=%d  notes=%d  health: %s\n",
+                     qPrintable(inName), qPrintable(outName), result.scenes, result.folders,
+                     result.notes, ok ? "ok" : "fail");
+        if (!result.error.isEmpty())
+            std::fprintf(stderr, "import-scriv-error: %s\n", qPrintable(result.error));
+        std::fflush(stdout);
+        std::fflush(stderr);
+        return ok ? 0 : 1;
+    }
 
     QuireFrame frame;
     frame.show();

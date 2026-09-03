@@ -2,6 +2,7 @@
 #include "MonasteryEditor.h"
 #include "EpubWriter.h"
 #include "DocumentIo.h"
+#include "ScrivenerImport.h"
 
 #include <algorithm>
 
@@ -71,7 +72,7 @@
 
 namespace {
 
-const QString kQuireVersion = QStringLiteral("0.3.12");
+const QString kQuireVersion = QStringLiteral("0.3.13");
 
 QString canonicalOrAbs(const QString &path)
 {
@@ -704,6 +705,10 @@ void QuireFrame::createActions()
     m_importAction->setToolTip(QStringLiteral("Import as scenes"));
     connect(m_importAction, &QAction::triggered, this, &QuireFrame::onImport);
 
+    m_importScrivenerAction = new QAction(QStringLiteral("Import Scrivener Project…"), this);
+    m_importScrivenerAction->setToolTip(QStringLiteral("Copy a Scrivener .scriv binder into a new .qr project"));
+    connect(m_importScrivenerAction, &QAction::triggered, this, &QuireFrame::onImportScrivener);
+
     m_compileAction = new QAction(QStringLiteral("Compile EPUB3 + Kindle DOCX"), this);
     m_compileAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+E")));
     m_compileAction->setIcon(QIcon(QStringLiteral(":/icons/justify.png")));
@@ -932,6 +937,7 @@ void QuireFrame::createMenus()
     fileMenu->addAction(m_newNoteAction);
     fileMenu->addAction(m_newFolderAction);
     fileMenu->addAction(m_importAction);
+    fileMenu->addAction(m_importScrivenerAction);
     fileMenu->addAction(m_renameAction);
     fileMenu->addAction(m_deleteAction);
     fileMenu->addAction(m_moveUpAction);
@@ -1360,6 +1366,7 @@ void QuireFrame::onAbout()
             "Binder order and compile include/exclude live in quire.json. "
             "Find walks every manuscript scene in binder order. "
             "Import html/md/txt/docx as scenes. "
+            "File → Import Scrivener Project copies a .scriv binder into a .qr; the original is left untouched. "
             "F11 focus mode hides the binder and format toolbar. "
             "Previous/Next Scene (Ctrl+PageUp/PageDown) walk manuscript scenes "
             "without the binder, including in focus mode. "
@@ -1740,6 +1747,58 @@ void QuireFrame::onImport()
                                      .arg(ok == 1 ? QString() : QStringLiteral("s")),
                                  4000);
 }
+
+void QuireFrame::onImportScrivener()
+{
+    if (m_editor && m_editor->isDirty())
+        persistCurrentScene(true);
+
+    const QString scrivStart = QDir::homePath();
+    QString scrivPath = QFileDialog::getExistingDirectory(
+        this, QStringLiteral("Select Scrivener project (.scriv folder)"),
+        scrivStart);
+    if (scrivPath.isEmpty()) {
+        const QString scrivx = QFileDialog::getOpenFileName(
+            this, QStringLiteral("Select Scrivener project (.scrivx)"),
+            scrivStart,
+            QStringLiteral("Scrivener project (*.scrivx);;All files (*)"));
+        if (scrivx.isEmpty())
+            return;
+        scrivPath = scrivx;
+    }
+
+    const QString parent = QFileDialog::getExistingDirectory(
+        this, QStringLiteral("Parent folder for the new Quire project"),
+        defaultManuscriptsRoot());
+    if (parent.isEmpty())
+        return;
+
+    ScrivenerImportResult probe;
+    // Import into a temporary name first via parent dir — title comes from package.
+    // We need the title before creating; run import with parent directory so helper names Title.qr.
+    // But importProject with existing dir creates parent/Title.qr. Good.
+    // Avoid collision: if Title.qr exists, importer refuses overwrite.
+    const QString outHint = parent; // directory → Title.qr inside
+    ScrivenerImportResult result;
+    const bool ok = ScrivenerImport::importProject(scrivPath, outHint, &result);
+    if (!ok) {
+        QMessageBox::warning(this, QStringLiteral("Quire"),
+                             result.error.isEmpty()
+                                 ? QStringLiteral("Scrivener import failed.")
+                                 : result.error);
+        return;
+    }
+
+    statusBar()->showMessage(
+        QStringLiteral("Imported Scrivener → %1 (%2 scenes, %3 folders, %4 notes)")
+            .arg(result.outName)
+            .arg(result.scenes)
+            .arg(result.folders)
+            .arg(result.notes),
+        6000);
+    openProject(result.outPath);
+}
+
 
 void QuireFrame::collectScenes(const QString &dir, QStringList *out, bool includeExcluded) const
 {
