@@ -1,0 +1,13 @@
+build/
+AppDir/
+*.AppImage
+.autosave/
+*.o
+*.so
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Manuscripts/
+proof/
+quire_0312_edit.py
+CHANGELOG.md

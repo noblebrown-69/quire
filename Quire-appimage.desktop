@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Quire
+Comment=Linux-native novel binder
+Exec=Quire
+Icon=quire
+Categories=Office;WordProcessor;
+Terminal=false

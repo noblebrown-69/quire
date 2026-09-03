@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  :root {
+    --desk: #3C2F2F;
+    --page: #F5E8C7;
+    --text: #1a1a1a;
+    --selection-bg: #D4AF37;
+    --selection-fg: #000;
+    --page-width: 8.5in;
+    --page-min-height: 11in;
+    --page-margin: 0 auto 40px;
+    --page-shadow: 0 10px 40px rgba(0,0,0,0.7);
+    --page-padding: 1in 0.85in;
+    --page-border: 1px solid #8B7355;
+    --editor-font: Georgia, "Noto Serif", serif;
+  }
+  html, body {
+    height: 100%;
+  }
+  body {
+    background: var(--desk);
+    margin: 0;
+    padding: 40px 0;
+    font-family: var(--editor-font);
+  }
+  .page {
+    width: var(--page-width);
+    min-height: var(--page-min-height);
+    margin: var(--page-margin);
+    background: var(--page);
+    box-shadow: var(--page-shadow);
+    padding: var(--page-padding);
+    box-sizing: border-box;
+    border: var(--page-border);
+  }
+  #editor {
+    min-height: 9in;
+    outline: none;
+    font-size: 12pt;
+    line-height: 1.65;
+    color: var(--text);
+    font-family: var(--editor-font);
+  }
+  .page-break {
+    page-break-after: always;
+    border: none;
+    border-top: 1px dashed #8B7355;
+    margin: 30px 0;
+  }
+  ::selection {
+    background: var(--selection-bg);
+    color: var(--selection-fg);
+  }
+  ul.checklist { list-style: none; padding-left: 0.2em; }
+  li.task { display:flex; gap:0.4em; align-items:flex-start; }
+  li.task input[type=checkbox] { margin-top:0.35em; width:1em; height:1em; accent-color: currentColor; flex:none; }
+  li.task.done span { text-decoration: line-through; opacity: 0.65; }
+
+  #editor table { border-collapse: collapse; width: 100%; margin: 0.6em 0 0.8em; }
+  #editor th, #editor td { border: 1px solid #ddd; padding: 0.3em 0.5em; vertical-align: top; }
+  #editor th { background: #f0f0f0; font-weight: bold; text-align: left; }
+  @media print {
+    html, body, .page, #editor {
+      background: #ffffff !important;
+      background-color: #ffffff !important;
+      background-image: none !important;
+      box-shadow: none !important;
+      color: #000000 !important;
+    }
+    body {
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+    .page {
+      width: auto;
+      min-height: auto;
+      margin: 0;
+      border: none;
+      padding: 0;
+    }
+    .page-break {
+      break-after: page;
+      page-break-after: always;
+      border: none;
+      margin: 0;
+    }
+    * {
+      -webkit-print-color-adjust: economy;
+      print-color-adjust: economy;
+    }
+    li.task input[type=checkbox] { display: none; }
+    li.task > span::before { content: "[ ] "; font-family: inherit; }
+    li.task.done > span::before { content: "[x] "; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div id="editor" contenteditable="true" spellcheck="true"></div>
+  </div>
+
+<script>
+window.monasteryDirty = false;
+
+function getWordCount() {
+  const text = document.getElementById('editor').innerText || '';
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+function syncTaskState(box) {
+  if (!box) return;
+  const li = box.closest('li.task');
+  if (box.checked) {
+    box.setAttribute('checked', '');
+    if (li) li.classList.add('done');
+  } else {
+    box.removeAttribute('checked');
+    if (li) li.classList.remove('done');
+  }
+}
+
+function setContent(html) {
+  window._loading = true;
+  document.getElementById('editor').innerHTML = html || '<p></p>';
+  document.querySelectorAll('#editor li.task input[type=checkbox]').forEach(function(box) {
+    box.checked = box.checked || box.hasAttribute('checked');
+    syncTaskState(box);
+  });
+  window.monasteryDirty = false;
+  window._loading = false;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function insertChecklist() {
+  const sel = window.getSelection();
+  const raw = (sel && !sel.isCollapsed) ? sel.toString() : '';
+  const lines = raw.split(/\r?\n/).map(function(s) {
+    return s.replace(/^\s*[•\-\*]\s*/, '');
+  }).filter(function(s) { return s.length > 0; });
+  function item(inner) {
+    return '<li class="task"><input type="checkbox" contenteditable="false"><span>' + inner + '</span></li>';
+  }
+  let html;
+  if (lines.length) {
+    html = '<ul class="checklist">' + lines.map(function(l) {
+      return item(escapeHtml(l) || '&#8203;');
+    }).join('') + '</ul>';
+  } else {
+    html = '<ul class="checklist">' + item('&#8203;') + '</ul>';
+  }
+  document.execCommand('insertHTML', false, html);
+  if (!window._loading) window.monasteryDirty = true;
+}
+function execCommand(cmd, val) {
+  document.execCommand(cmd, false, val);
+}
+function markClean() {
+  window.monasteryDirty = false;
+}
+function isDirty() {
+  return !!window.monasteryDirty;
+}
+
+function applyTheme(t) {
+  if (!t) return;
+  const root = document.documentElement;
+  const desk = t.desk || t.pageBg || '#3C2F2F';
+  const pageBg = t.pageAsObject ? (t.pageBg || '#F5E8C7') : desk;
+  root.style.setProperty('--desk', desk);
+  root.style.setProperty('--page', pageBg);
+  root.style.setProperty('--text', t.pageText || '#1a1a1a');
+  root.style.setProperty('--selection-bg', t.selectionBg || '#D4AF37');
+  root.style.setProperty('--selection-fg', t.selectionFg || '#000');
+  const font = t.editorFont || 'Georgia, "Noto Serif", serif';
+  root.style.setProperty('--editor-font', font);
+  document.body.style.fontFamily = font;
+  if (t.pageAsObject) {
+    document.body.style.padding = '40px 0';
+    root.style.setProperty('--page-width', '8.5in');
+    root.style.setProperty('--page-min-height', '11in');
+    root.style.setProperty('--page-margin', '0 auto 40px');
+    root.style.setProperty('--page-shadow', '0 10px 40px rgba(0,0,0,0.7)');
+    root.style.setProperty('--page-padding', '1in 0.85in');
+    root.style.setProperty('--page-border', '1px solid #8B7355');
+  } else {
+    document.body.style.padding = '0';
+    root.style.setProperty('--page-width', '100%');
+    root.style.setProperty('--page-min-height', '100%');
+    root.style.setProperty('--page-margin', '0');
+    root.style.setProperty('--page-shadow', 'none');
+    root.style.setProperty('--page-padding', '0.75in');
+    root.style.setProperty('--page-border', 'none');
+  }
+}
+
+function isFontSizeMarker(value) {
+  if (!value) return false;
+  const v = String(value).toLowerCase();
+  return v === 'xxx-large' || v === 'xx-large' || v === '7';
+}
+
+function containingBlock(node) {
+  const editor = document.getElementById('editor');
+  let n = node;
+  if (n && n.nodeType === Node.TEXT_NODE)
+    n = n.parentElement;
+  while (n && n !== editor) {
+    const t = n.tagName;
+    if (t === 'P' || t === 'DIV' || t === 'H1' || t === 'H2' || t === 'H3' ||
+        t === 'H4' || t === 'H5' || t === 'H6' || t === 'LI' || t === 'TD')
+      return n;
+    n = n.parentElement;
+  }
+  return editor;
+}
+
+function topSelectionTargets() {
+  const editor = document.getElementById('editor');
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0)
+    return editor ? [containingBlock(editor)] : [];
+  const range = sel.getRangeAt(0);
+  if (range.collapsed)
+    return [containingBlock(range.startContainer)];
+  const hits = [];
+  const all = editor.querySelectorAll('*');
+  for (let i = 0; i < all.length; i++) {
+    const el = all[i];
+    try {
+      if (range.intersectsNode(el))
+        hits.push(el);
+    } catch (e) {}
+  }
+  return hits.filter(function(el) {
+    return !hits.some(function(other) {
+      return other !== el && other.contains(el);
+    });
+  });
+}
+
+function convertFontSizeMarkers(pt) {
+  const editor = document.getElementById('editor');
+  if (!editor) return;
+  editor.querySelectorAll('font[size="7"]').forEach(function(fontEl) {
+    const span = document.createElement('span');
+    span.style.fontSize = pt + 'pt';
+    while (fontEl.firstChild)
+      span.appendChild(fontEl.firstChild);
+    if (fontEl.parentNode)
+      fontEl.parentNode.replaceChild(span, fontEl);
+  });
+  editor.querySelectorAll('span, font').forEach(function(el) {
+    const inline = el.style ? el.style.fontSize : '';
+    const attr = el.getAttribute('size');
+    if (isFontSizeMarker(inline) || isFontSizeMarker(attr)) {
+      if (el.tagName === 'FONT') {
+        const span = document.createElement('span');
+        span.style.fontSize = pt + 'pt';
+        while (el.firstChild)
+          span.appendChild(el.firstChild);
+        if (el.parentNode)
+          el.parentNode.replaceChild(span, el);
+      } else {
+        el.style.fontSize = pt + 'pt';
+      }
+    }
+  });
+}
+
+function applyInlineToSelection(prop, value) {
+  const editor = document.getElementById('editor');
+  const targets = topSelectionTargets();
+  const cssName = (prop === 'fontSize') ? 'font-size' : 'font-family';
+  targets.forEach(function(el) {
+    if (!el || (editor && !editor.contains(el) && el !== editor))
+      return;
+    if (el === editor)
+      return;
+    el.style[prop] = value;
+    el.querySelectorAll('*').forEach(function(d) {
+      if (d.style && d.style[prop])
+        d.style.removeProperty(cssName);
+    });
+  });
+}
+
+function applyFontSize(pt) {
+  document.execCommand('styleWithCSS', false, true);
+  document.execCommand('fontSize', false, '7');
+  convertFontSizeMarkers(pt);
+  applyInlineToSelection('fontSize', pt + 'pt');
+  window.monasteryDirty = true;
+}
+
+function applyFontFamily(name) {
+  document.execCommand('styleWithCSS', false, true);
+  document.execCommand('fontName', false, name);
+  applyInlineToSelection('fontFamily', name);
+  window.monasteryDirty = true;
+}
+
+function parseFontFamilyTokens(stack) {
+  const out = [];
+  const re = /"([^"]+)"|'([^']+)'|([^,]+)/g;
+  let m;
+  const s = String(stack || '');
+  while ((m = re.exec(s))) {
+    const t = (m[1] || m[2] || m[3] || '').trim();
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+function isGenericOrSystemFont(name) {
+  const n = String(name || '').toLowerCase();
+  return n === 'serif' || n === 'sans-serif' || n === 'monospace' || n === 'cursive'
+    || n === 'fantasy' || n === 'system-ui' || n === 'ui-serif' || n === 'ui-sans-serif'
+    || n === 'ui-monospace' || n === 'ui-rounded' || n === 'emoji' || n === 'math'
+    || n === 'fangsong' || n === 'apple-system' || n === '-apple-system'
+    || n === 'blinkmacsystemfont';
+}
+
+function resolveUsedFamily(el, stack) {
+  const tokens = parseFontFamilyTokens(stack);
+  const named = tokens.filter(function(t) { return !isGenericOrSystemFont(t); });
+  const candidates = named.length ? named : tokens;
+  if (document.fonts && document.fonts.check && el) {
+    const size = (getComputedStyle(el).fontSize || '16px');
+    for (let i = 0; i < candidates.length; i++) {
+      try {
+        if (document.fonts.check(size + ' "' + candidates[i] + '"'))
+          return candidates[i];
+      } catch (e) {}
+    }
+  }
+  return candidates[0] || tokens[0] || '';
+}
+
+function cssSizeToPt(size) {
+  if (!size) return 0;
+  const s = String(size).trim();
+  const n = parseFloat(s);
+  if (!isFinite(n) || n <= 0) return 0;
+  if (/pt\s*$/i.test(s)) return Math.round(n);
+  if (/px\s*$/i.test(s)) return Math.round(n * 72 / 96);
+  return Math.round(n * 72 / 96);
+}
+
+function selectionFontElement() {
+  const editor = document.getElementById('editor');
+  const sel = window.getSelection();
+  if (sel && sel.anchorNode) {
+    let n = sel.anchorNode;
+    if (n.nodeType === Node.TEXT_NODE)
+      n = n.parentElement;
+    if (n && editor && (n === editor || editor.contains(n)))
+      return n;
+  }
+  return editor;
+}
+
+function styleProbeElement(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE)
+    return el;
+  if (el.style && (el.style.fontFamily || el.style.fontSize))
+    return el;
+  const inner = el.querySelector && el.querySelector('[style*="font-family"], [style*="font-size"]');
+  return inner || el;
+}
+
+function fontInfoFromElement(el) {
+  const info = { family: '', pt: 0 };
+  const probe = styleProbeElement(el);
+  if (!probe) return info;
+  try {
+    const cs = getComputedStyle(probe);
+    info.family = resolveUsedFamily(probe, cs.fontFamily);
+    info.pt = cssSizeToPt(cs.fontSize);
+  } catch (e) {}
+  if (!info.family) {
+    try {
+      const tokens = parseFontFamilyTokens(document.queryCommandValue('fontName') || '');
+      info.family = tokens[0] || '';
+    } catch (e) {}
+  }
+  return info;
+}
+
+function getSelectionFont() {
+  return fontInfoFromElement(selectionFontElement());
+}
+
+function getHeadingFont() {
+  const editor = document.getElementById('editor');
+  const heading = editor ? editor.querySelector('h1, h2, h3, h4, h5, h6') : null;
+  const probe = heading ? styleProbeElement(heading) : editor;
+  const info = fontInfoFromElement(probe);
+  info.found = !!heading;
+  if (probe && probe.nodeType === Node.ELEMENT_NODE) {
+    try {
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(probe);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (e) {}
+  }
+  const caret = fontInfoFromElement(selectionFontElement());
+  info.caretFamily = caret.family;
+  info.caretPt = caret.pt;
+  return info;
+}
+
+function sanitizePasted(root) {
+  const allowed = {
+    B:1, I:1, U:1, EM:1, STRONG:1, P:1, BR:1, DIV:1,
+    H1:1, H2:1, H3:1, BLOCKQUOTE:1, UL:1, OL:1, LI:1, SPAN:1, INPUT:1,
+    TABLE:1, THEAD:1, TBODY:1, TFOOT:1, TR:1, TD:1, TH:1, COLGROUP:1, COL:1
+  };
+  const drop = { SCRIPT:1, STYLE:1, META:1, LINK:1, IMG:1, SVG:1, IFRAME:1 };
+  const nodes = Array.from(root.childNodes);
+  for (const node of nodes) {
+    if (node.nodeType === Node.COMMENT_NODE) {
+      node.remove();
+      continue;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE)
+      continue;
+    if (drop[node.tagName]) {
+      node.remove();
+      continue;
+    }
+    if (node.tagName === 'INPUT') {
+      const type = (node.getAttribute('type') || '').toLowerCase();
+      if (type !== 'checkbox') {
+        node.remove();
+        continue;
+      }
+      const checked = node.checked || node.hasAttribute('checked');
+      while (node.attributes.length)
+        node.removeAttribute(node.attributes[0].name);
+      node.setAttribute('type', 'checkbox');
+      node.setAttribute('contenteditable', 'false');
+      if (checked)
+        node.setAttribute('checked', '');
+      continue;
+    }
+    const keepChecklist = node.tagName === 'UL' && node.classList.contains('checklist');
+    const keepTask = node.tagName === 'LI' && node.classList.contains('task');
+    const keepDone = keepTask && node.classList.contains('done');
+    sanitizePasted(node);
+    if (!allowed[node.tagName]) {
+      const parent = node.parentNode;
+      while (node.firstChild)
+        parent.insertBefore(node.firstChild, node);
+      parent.removeChild(node);
+    } else {
+      const keepStyle = (node.tagName === 'SPAN' || node.tagName === 'TD' || node.tagName === 'TH'
+        || node.tagName === 'P' || node.tagName === 'H1' || node.tagName === 'H2' || node.tagName === 'H3'
+        || node.tagName === 'FONT') ? node.getAttribute('style') : null;
+      while (node.attributes.length)
+        node.removeAttribute(node.attributes[0].name);
+      if (keepStyle)
+        node.setAttribute('style', keepStyle);
+      if (keepChecklist)
+        node.className = 'checklist';
+      if (keepTask)
+        node.className = keepDone ? 'task done' : 'task';
+    }
+  }
+}
+
+(function setupEditor() {
+  const ed = document.getElementById('editor');
+  const mark = function() { if (!window._loading) window.monasteryDirty = true; };
+  ed.addEventListener('input', mark);
+  ed.addEventListener('keyup', mark);
+  ed.addEventListener('click', function(e) {
+    if (!e.target || !e.target.matches || !e.target.matches('input[type=checkbox]'))
+      return;
+    syncTaskState(e.target);
+    if (!window._loading) window.monasteryDirty = true;
+  });
+  ed.addEventListener('change', function(e) {
+    if (!e.target || !e.target.matches || !e.target.matches('input[type=checkbox]'))
+      return;
+    syncTaskState(e.target);
+    if (!window._loading) window.monasteryDirty = true;
+  });
+  ed.addEventListener('paste', function(e) {
+    if (!e.clipboardData) return;
+    const html = e.clipboardData.getData('text/html');
+    const text = e.clipboardData.getData('text/plain');
+    if (!html && !text) return;
+    e.preventDefault();
+    if (!html) {
+      document.execCommand('insertText', false, text);
+      window.monasteryDirty = true;
+      return;
+    }
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    sanitizePasted(tmp);
+    document.execCommand('insertHTML', false, tmp.innerHTML || text);
+    window.monasteryDirty = true;
+  });
+})();
+</script>
+</body>
+</html>
