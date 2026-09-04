@@ -15,5 +15,10 @@
         <file>icons/save.png</file>
         <file>icons/monastery.png</file>
         <file>editor.html</file>
+        <file>fonts/gelasio/Gelasio-Regular.ttf</file>
+        <file>fonts/gelasio/Gelasio-Italic.ttf</file>
+        <file>fonts/gelasio/Gelasio-Bold.ttf</file>
+        <file>fonts/gelasio/Gelasio-BoldItalic.ttf</file>
+        <file>fonts/gelasio/OFL.txt</file>
     </qresource>
 </RCC>

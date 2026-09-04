@@ -228,6 +228,9 @@ elif [ -d "\$HERE/usr/resources" ]; then
 fi
 export QTWEBENGINE_LOCALES_PATH="\$HERE/usr/share/qt6/translations/qtwebengine_locales"
 export QTWEBENGINE_DISABLE_SANDBOX=1
+if [ -f "\$HERE/usr/share/fonts/truetype/gelasio/fonts.conf" ]; then
+  export FONTCONFIG_FILE="\$HERE/usr/share/fonts/truetype/gelasio/fonts.conf"
+fi
 exec "\$HERE/usr/bin/${bin_name}" "\$@"
 APPRUN_EOF
     chmod +x AppDir/AppRun
@@ -322,6 +325,12 @@ elif ls Quire-*.AppImage >/dev/null 2>&1; then
     done
     shopt -u nullglob
 fi
+
+# OFL Gelasio (Georgia stand-in) for portable rendering
+mkdir -p AppDir/usr/share/fonts/truetype/gelasio
+cp -a fonts/gelasio/*.ttf fonts/gelasio/OFL.txt AppDir/usr/share/fonts/truetype/gelasio/
+# fonts.conf with absolute-in-AppDir path rewritten at runtime by AppRun
+cp -a fonts/gelasio/fonts.conf AppDir/usr/share/fonts/truetype/gelasio/fonts.conf
 
 install_qtwebengine_apprun Quire
 resquash_appimage Quire.AppImage Quire

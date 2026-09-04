@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QIODevice>
 #include <QFileInfo>
 #include <QHash>
 #include <QRegularExpression>
@@ -116,8 +117,56 @@ QString wrapXhtml(const EpubWriter::Scene &scene)
 }
 
 const char *kCss =
+    "@font-face {\n"
+    "  font-family: \"Gelasio\";\n"
+    "  src: url(\"fonts/Gelasio-Regular.ttf\") format(\"truetype\");\n"
+    "  font-weight: 400;\n"
+    "  font-style: normal;\n"
+    "}\n"
+    "@font-face {\n"
+    "  font-family: \"Gelasio\";\n"
+    "  src: url(\"fonts/Gelasio-Italic.ttf\") format(\"truetype\");\n"
+    "  font-weight: 400;\n"
+    "  font-style: italic;\n"
+    "}\n"
+    "@font-face {\n"
+    "  font-family: \"Gelasio\";\n"
+    "  src: url(\"fonts/Gelasio-Bold.ttf\") format(\"truetype\");\n"
+    "  font-weight: 700;\n"
+    "  font-style: normal;\n"
+    "}\n"
+    "@font-face {\n"
+    "  font-family: \"Gelasio\";\n"
+    "  src: url(\"fonts/Gelasio-BoldItalic.ttf\") format(\"truetype\");\n"
+    "  font-weight: 700;\n"
+    "  font-style: italic;\n"
+    "}\n"
+    "@font-face {\n"
+    "  font-family: \"Georgia\";\n"
+    "  src: url(\"fonts/Gelasio-Regular.ttf\") format(\"truetype\");\n"
+    "  font-weight: 400;\n"
+    "  font-style: normal;\n"
+    "}\n"
+    "@font-face {\n"
+    "  font-family: \"Georgia\";\n"
+    "  src: url(\"fonts/Gelasio-Italic.ttf\") format(\"truetype\");\n"
+    "  font-weight: 400;\n"
+    "  font-style: italic;\n"
+    "}\n"
+    "@font-face {\n"
+    "  font-family: \"Georgia\";\n"
+    "  src: url(\"fonts/Gelasio-Bold.ttf\") format(\"truetype\");\n"
+    "  font-weight: 700;\n"
+    "  font-style: normal;\n"
+    "}\n"
+    "@font-face {\n"
+    "  font-family: \"Georgia\";\n"
+    "  src: url(\"fonts/Gelasio-BoldItalic.ttf\") format(\"truetype\");\n"
+    "  font-weight: 700;\n"
+    "  font-style: italic;\n"
+    "}\n"
     "body {\n"
-    "  font-family: Georgia, \"Times New Roman\", serif;\n"
+    "  font-family: Gelasio, Georgia, \"Times New Roman\", serif;\n"
     "  font-size: 1em;\n"
     "  line-height: 1.3;\n"
     "  margin: 1em 1.2em;\n"
@@ -141,6 +190,10 @@ const char *kCss =
     "}\n"
     "p { margin: 0 0 0.8em 0; text-indent: 1.2em; }\n"
     "p:first-of-type { text-indent: 0; }\n"
+    "p.scene-break, p[style*=\"text-align:center\"] {\n"
+    "  text-align: center;\n"
+    "  text-indent: 0;\n"
+    "}\n"
     "nav ol { list-style: none; padding-left: 1em; }\n"
     "nav a { text-decoration: none; color: inherit; }\n";
 
@@ -163,7 +216,12 @@ QString contentOpf(const QString &title, const QString &author,
     QString spine;
     manifest += QStringLiteral(
         "    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n"
-        "    <item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>\n");
+        "    <item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>\n"
+        "    <item id=\"font-gelasio-regular\" href=\"fonts/Gelasio-Regular.ttf\" media-type=\"font/ttf\"/>\n"
+        "    <item id=\"font-gelasio-italic\" href=\"fonts/Gelasio-Italic.ttf\" media-type=\"font/ttf\"/>\n"
+        "    <item id=\"font-gelasio-bold\" href=\"fonts/Gelasio-Bold.ttf\" media-type=\"font/ttf\"/>\n"
+        "    <item id=\"font-gelasio-bolditalic\" href=\"fonts/Gelasio-BoldItalic.ttf\" media-type=\"font/ttf\"/>\n"
+        "    <item id=\"font-gelasio-ofl\" href=\"fonts/OFL.txt\" media-type=\"text/plain\"/>\n");
     for (int i = 0; i < sceneCount; ++i) {
         const QString id = QStringLiteral("scene-%1").arg(i + 1);
         manifest += QStringLiteral("    <item id=\"%1\" href=\"%2\" media-type=\"application/xhtml+xml\"/>\n")
@@ -240,7 +298,10 @@ QString navXhtml(const QString &bookTitle, const QVector<EpubWriter::Scene> &sce
                 ch.href = href;
                 roots.append(ch);
             }
-            if (!roots.isEmpty()) {
+            const bool duplicateLeaf = sc.startChapter
+                && !sc.title.isEmpty()
+                && sc.title.compare(sc.chapterTitle, Qt::CaseInsensitive) == 0;
+            if (!roots.isEmpty() && !duplicateLeaf) {
                 NavNode kid;
                 kid.title = sc.title.isEmpty() ? sc.chapterTitle : sc.title;
                 kid.href = href;
@@ -280,6 +341,224 @@ QString navXhtml(const QString &bookTitle, const QVector<EpubWriter::Scene> &sce
         .arg(navOl(roots, 4));
 }
 
+
+QString rebalanceInlineAcrossParagraphs(const QString &html)
+{
+    static const QStringList inlineNames{
+        QStringLiteral("em"), QStringLiteral("i"),
+        QStringLiteral("strong"), QStringLiteral("b"),
+    };
+    static const QStringList voidNames{
+        QStringLiteral("br"), QStringLiteral("hr"), QStringLiteral("img"),
+        QStringLiteral("meta"), QStringLiteral("link"), QStringLiteral("input"),
+        QStringLiteral("col"), QStringLiteral("area"), QStringLiteral("base"),
+        QStringLiteral("embed"), QStringLiteral("source"), QStringLiteral("wbr"),
+        QStringLiteral("param"), QStringLiteral("track"),
+    };
+    auto isInline = [&](const QString &n) {
+        return inlineNames.contains(n, Qt::CaseInsensitive);
+    };
+    auto isVoid = [&](const QString &n) {
+        return voidNames.contains(n, Qt::CaseInsensitive);
+    };
+
+    QString out;
+    out.reserve(html.size() + 64);
+    QStringList stack;
+    bool inP = false;
+
+    auto emitCloseInlines = [&]() {
+        for (int i = stack.size() - 1; i >= 0; --i)
+            out += QLatin1String("</") + stack.at(i) + QLatin1Char('>');
+    };
+    auto emitOpenInlines = [&]() {
+        for (const QString &n : stack)
+            out += QLatin1Char('<') + n + QLatin1Char('>');
+    };
+
+    const int n = html.size();
+    int i = 0;
+    while (i < n) {
+        if (html.at(i) != QLatin1Char('<')) {
+            int j = html.indexOf(QLatin1Char('<'), i);
+            if (j < 0)
+                j = n;
+            out += html.mid(i, j - i);
+            i = j;
+            continue;
+        }
+        if (html.mid(i, 4) == QLatin1String("<!--")) {
+            const int end = html.indexOf(QLatin1String("-->"), i + 4);
+            if (end < 0) {
+                out += html.mid(i);
+                break;
+            }
+            out += html.mid(i, end + 3 - i);
+            i = end + 3;
+            continue;
+        }
+        const int gt = html.indexOf(QLatin1Char('>'), i + 1);
+        if (gt < 0) {
+            out += html.mid(i);
+            break;
+        }
+        const QString raw = html.mid(i, gt + 1 - i);
+        i = gt + 1;
+
+        int k = 1;
+        bool closing = false;
+        if (k < raw.size() && raw.at(k) == QLatin1Char('/')) {
+            closing = true;
+            ++k;
+        }
+        while (k < raw.size() && raw.at(k).isSpace())
+            ++k;
+        const int nameStart = k;
+        while (k < raw.size() && (raw.at(k).isLetterOrNumber() || raw.at(k) == QLatin1Char('-')
+                                  || raw.at(k) == QLatin1Char(':')))
+            ++k;
+        const QString name = raw.mid(nameStart, k - nameStart).toLower();
+        const bool selfClose = raw.trimmed().endsWith(QLatin1String("/>")) || isVoid(name);
+
+        if (name.isEmpty() || selfClose) {
+            out += raw;
+            continue;
+        }
+        if (name == QLatin1String("p")) {
+            if (closing) {
+                if (inP)
+                    emitCloseInlines();
+                out += raw;
+                inP = false;
+            } else {
+                if (inP) {
+                    emitCloseInlines();
+                    out += QStringLiteral("</p>");
+                    inP = false;
+                }
+                out += raw;
+                emitOpenInlines();
+                inP = true;
+            }
+            continue;
+        }
+        if (isInline(name)) {
+            if (closing) {
+                const int idx = stack.lastIndexOf(name);
+                if (idx < 0)
+                    continue;
+                if (inP) {
+                    for (int s = stack.size() - 1; s > idx; --s)
+                        out += QLatin1String("</") + stack.at(s) + QLatin1Char('>');
+                    out += QLatin1String("</") + name + QLatin1Char('>');
+                }
+                while (stack.size() > idx)
+                    stack.removeLast();
+            } else {
+                out += raw;
+                stack.append(name);
+            }
+            continue;
+        }
+        out += raw;
+    }
+    if (inP) {
+        emitCloseInlines();
+        out += QStringLiteral("</p>");
+    }
+    return out;
+}
+
+ushort mapCp1252C1(ushort u)
+{
+    static const ushort kMap[32] = {
+        0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017D, 0,
+        0, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178
+    };
+    if (u < 0x80 || u > 0x9F)
+        return u;
+    return kMap[u - 0x80];
+}
+
+
+QString centerSceneBreakParagraphs(const QString &html)
+{
+    // Heal Scrivener-style separators that lost \\qc: >>--->, #, ***, ••• alone in a <p>.
+    static const QRegularExpression paraRe(
+        QStringLiteral("<p(\\s[^>]*)?>([\\s\\S]*?)</p>"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression tagRe(QStringLiteral("<[^>]+>"));
+    QString out;
+    out.reserve(html.size() + 32);
+    int pos = 0;
+    auto it = paraRe.globalMatch(html);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        out += html.mid(pos, m.capturedStart() - pos);
+        const QString attrs = m.captured(1);
+        QString inner = m.captured(2);
+        pos = m.capturedEnd();
+
+        if (attrs.contains(QStringLiteral("text-align"), Qt::CaseInsensitive)
+            || attrs.contains(QStringLiteral("scene-break"), Qt::CaseInsensitive)) {
+            out += m.captured(0);
+            continue;
+        }
+
+        QString plain = inner;
+        plain.replace(tagRe, QString());
+        plain.replace(QStringLiteral("&gt;"), QStringLiteral(">"), Qt::CaseInsensitive);
+        plain.replace(QStringLiteral("&lt;"), QStringLiteral("<"), Qt::CaseInsensitive);
+        plain.replace(QStringLiteral("&amp;"), QStringLiteral("&"), Qt::CaseInsensitive);
+        plain.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "), Qt::CaseInsensitive);
+        plain.replace(QChar(0x2003), QLatin1Char(' '));
+        plain = plain.trimmed();
+
+        const bool isBreak =
+            plain == QLatin1String(">>--->")
+            || plain == QLatin1String("#")
+            || plain == QLatin1String("***")
+            || plain == QLatin1String("* * *")
+            || plain == QLatin1String("•••")
+            || plain == QString::fromUtf8("• • •");
+        if (!isBreak) {
+            out += m.captured(0);
+            continue;
+        }
+
+        QString a = attrs;
+        if (a.isEmpty())
+            a = QStringLiteral(" class=\"scene-break\" style=\"text-align:center\"");
+        else
+            a += QStringLiteral(" class=\"scene-break\" style=\"text-align:center\"");
+        out += QStringLiteral("<p%1>%2</p>").arg(a, inner);
+    }
+    out += html.mid(pos);
+    return out;
+}
+
+QString repairCp1252C1(const QString &s)
+{
+    QString o;
+    o.reserve(s.size());
+    for (int i = 0; i < s.size(); ++i) {
+        const ushort u = s.at(i).unicode();
+        if (u < 0x80 || u > 0x9F) {
+            o += s.at(i);
+            continue;
+        }
+        const ushort mapped = mapCp1252C1(u);
+        if (mapped == 0)
+            continue;
+        if (!o.isEmpty() && o.at(o.size() - 1).unicode() == mapped)
+            continue;
+        o += QChar(mapped);
+    }
+    return o;
+}
+
 } // namespace
 
 bool EpubWriter::isGenericSceneTitle(const QString &title)
@@ -292,9 +571,14 @@ bool EpubWriter::isGenericSceneTitle(const QString &title)
     return re.match(t).hasMatch();
 }
 
+QString EpubWriter::healBody(const QString &html)
+{
+    return centerSceneBreakParagraphs(repairCp1252C1(html));
+}
+
 QString EpubWriter::sanitizeBody(const QString &html)
 {
-    QString s = html;
+    QString s = healBody(html);
     static const QRegularExpression emptyP(
         QStringLiteral("<p\\b[^>]*>\\s*(?:<br\\b[^>]*/?>\\s*)?</p>"),
         QRegularExpression::CaseInsensitiveOption);
@@ -323,7 +607,7 @@ QString EpubWriter::sanitizeBody(const QString &html)
         else
             s = s.left(lastClose + 1);
     }
-    return s.trimmed();
+    return rebalanceInlineAcrossParagraphs(s.trimmed());
 }
 
 QString EpubWriter::headingHtml(const Scene &scene)
@@ -400,6 +684,23 @@ bool EpubWriter::write(const QString &epubPath,
         return fail(QStringLiteral("Failed to write nav.xhtml."));
     if (!addZipEntry(zf, "OEBPS/style.css", QByteArray(kCss), false))
         return fail(QStringLiteral("Failed to write style.css."));
+
+    const QStringList fontFiles = {
+        QStringLiteral("Gelasio-Regular.ttf"),
+        QStringLiteral("Gelasio-Italic.ttf"),
+        QStringLiteral("Gelasio-Bold.ttf"),
+        QStringLiteral("Gelasio-BoldItalic.ttf"),
+        QStringLiteral("OFL.txt"),
+    };
+    for (const QString &name : fontFiles) {
+        QFile in(QStringLiteral(":/fonts/gelasio/") + name);
+        if (!in.open(QIODevice::ReadOnly))
+            return fail(QStringLiteral("Missing bundled font resource: %1").arg(name));
+        const QByteArray bytes = in.readAll();
+        const QByteArray zipName = QStringLiteral("OEBPS/fonts/%1").arg(name).toUtf8();
+        if (!addZipEntry(zf, zipName.constData(), bytes, false))
+            return fail(QStringLiteral("Failed to write font %1.").arg(name));
+    }
 
     for (int i = 0; i < use.size(); ++i) {
         const QByteArray xhtml = utf8(wrapXhtml(use[i]));

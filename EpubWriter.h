@@ -16,6 +16,7 @@ public:
         bool startChapter = false;
     };
 
+    static QString healBody(const QString &html);
     static QString sanitizeBody(const QString &html);
     static QString headingHtml(const Scene &scene);
     static bool isGenericSceneTitle(const QString &title);

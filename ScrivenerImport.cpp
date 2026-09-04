@@ -12,7 +12,7 @@
 
 namespace {
 
-const QString kQuireVersion = QStringLiteral("0.3.13");
+const QString kQuireVersion = QStringLiteral("0.3.17");
 
 QString projectFolderName(const QString &input)
 {
@@ -142,6 +142,25 @@ bool isDestinedSkipControl(const QString &word)
     return skip.contains(word);
 }
 
+QChar fromRtfAnsiByte(int code)
+{
+    static const ushort kMap[32] = {
+        0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017D, 0,
+        0, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178
+    };
+    if (code < 0)
+        code += 256;
+    if (code >= 0x80 && code <= 0x9F) {
+        const ushort mapped = kMap[code - 0x80];
+        if (mapped)
+            return QChar(mapped);
+        return QChar();
+    }
+    return QChar(code & 0xFF);
+}
+
 } // namespace
 
 QString ScrivenerImport::rtfToSimpleHtml(const QString &rtf)
@@ -154,14 +173,27 @@ QString ScrivenerImport::rtfToSimpleHtml(const QString &rtf)
     bool bold = false;
     bool italic = false;
     bool inParagraph = false;
+    int unicodeFallbackLen = 1;
+    QString paraAlign; // empty = left; "center"/"right"/"justify"
     auto ensureP = [&]() {
         if (!inParagraph) {
-            body += QStringLiteral("<p>");
+            if (paraAlign.isEmpty())
+                body += QStringLiteral("<p>");
+            else
+                body += QStringLiteral("<p style=\"text-align:%1\">").arg(paraAlign);
             inParagraph = true;
+            if (bold)
+                body += QStringLiteral("<strong>");
+            if (italic)
+                body += QStringLiteral("<em>");
         }
     };
     auto closeP = [&]() {
         if (inParagraph) {
+            if (italic)
+                body += QStringLiteral("</em>");
+            if (bold)
+                body += QStringLiteral("</strong>");
             body += QStringLiteral("</p>");
             inParagraph = false;
         }
@@ -233,8 +265,11 @@ QString ScrivenerImport::rtfToSimpleHtml(const QString &rtf)
                 if (i + 3 < n) {
                     bool ok = false;
                     const int code = QString(rtf.mid(i + 2, 2)).toInt(&ok, 16);
-                    if (ok)
-                        appendText(QString(QChar(code)));
+                    if (ok) {
+                        const QChar mapped = fromRtfAnsiByte(code);
+                        if (!mapped.isNull())
+                            appendText(QString(mapped));
+                    }
                 }
                 i += 4;
                 continue;
@@ -270,9 +305,29 @@ QString ScrivenerImport::rtfToSimpleHtml(const QString &rtf)
                 ++j;
             i = j;
 
-            if (word == QLatin1String("par") || word == QLatin1String("pard")
-                || word == QLatin1String("line")) {
+            if (word == QLatin1String("pard")) {
                 closeP();
+                paraAlign.clear();
+                continue;
+            }
+            if (word == QLatin1String("par") || word == QLatin1String("line")) {
+                closeP();
+                continue;
+            }
+            if (word == QLatin1String("qc")) {
+                paraAlign = QStringLiteral("center");
+                continue;
+            }
+            if (word == QLatin1String("ql")) {
+                paraAlign.clear();
+                continue;
+            }
+            if (word == QLatin1String("qr")) {
+                paraAlign = QStringLiteral("right");
+                continue;
+            }
+            if (word == QLatin1String("qj")) {
+                paraAlign = QStringLiteral("justify");
                 continue;
             }
             if (word == QLatin1String("b")) {
@@ -301,19 +356,33 @@ QString ScrivenerImport::rtfToSimpleHtml(const QString &rtf)
                 }
                 continue;
             }
+            if (word == QLatin1String("uc") && hasNum) {
+                unicodeFallbackLen = num < 0 ? 0 : num;
+                continue;
+            }
             if (word == QLatin1String("u") && hasNum) {
-                // unicode \uN?
-                QChar ch(num);
-                // optional ANSI replacement char follows
-                if (i < n && rtf.at(i) != QLatin1Char('\\') && rtf.at(i) != QLatin1Char('{')
-                    && rtf.at(i) != QLatin1Char('}') && rtf.at(i) != QLatin1Char('\n')
-                    && rtf.at(i) != QLatin1Char('\r')) {
-                    // skip one replacement char if present (common RTF)
-                    // Only skip if next is not part of readable stream oddly; Scrivener uses ?
-                    if (!rtf.at(i).isNull())
-                        ++i;
+                int cp = num;
+                if (cp < 0)
+                    cp += 65536;
+                int skip = unicodeFallbackLen;
+                while (skip > 0 && i < n) {
+                    if (i + 3 < n && rtf.at(i) == QLatin1Char('\\')
+                        && rtf.at(i + 1) == QLatin1Char('\'')) {
+                        i += 4;
+                        --skip;
+                        continue;
+                    }
+                    const QChar nxt = rtf.at(i);
+                    if (nxt == QLatin1Char('\\') || nxt == QLatin1Char('{')
+                        || nxt == QLatin1Char('}'))
+                        break;
+                    if (nxt == QLatin1Char('\n') || nxt == QLatin1Char('\r'))
+                        break;
+                    ++i;
+                    --skip;
                 }
-                appendText(QString(ch));
+                if (cp > 0)
+                    appendText(QString(QChar(cp)));
                 continue;
             }
             if (word == QLatin1String("tab")) {
@@ -353,10 +422,6 @@ QString ScrivenerImport::rtfToSimpleHtml(const QString &rtf)
         appendText(QString(c));
         ++i;
     }
-    if (italic)
-        body += QStringLiteral("</em>");
-    if (bold)
-        body += QStringLiteral("</strong>");
     closeP();
     if (body.trimmed().isEmpty())
         return QStringLiteral("<p></p>");

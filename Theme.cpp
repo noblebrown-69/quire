@@ -21,8 +21,8 @@ static Theme makeLeather()
     t.desk = QStringLiteral("#3C2F2F");
     t.selectionBg = QStringLiteral("#D4AF37");
     t.selectionFg = QStringLiteral("#000000");
-    t.uiFont = QStringLiteral("Noto Serif");
-    t.editorFont = QStringLiteral("Georgia, \"Noto Serif\", serif");
+    t.uiFont = QStringLiteral("Gelasio");
+    t.editorFont = QStringLiteral("Georgia, Gelasio, \"Noto Serif\", serif");
     t.pageAsObject = true;
     return t;
 }

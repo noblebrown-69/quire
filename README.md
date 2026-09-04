@@ -14,16 +14,16 @@ Quire is the Linux-native version of that binder: small, portable, yours. The pr
 
 ## Features
 
-**Binder.** Manuscript on top, Notes underneath. Chapters are folders at manuscript root (never nested under the current chapter). Scenes are `.html` files inside them. Ctrl+Up / Ctrl+Down reorder siblings. Uncheck Include in Compile to skip a scene or a whole folder; excluded items stay in the tree, dimmed.
+**Binder.** Manuscript on top, Notes underneath. Chapters are folders at manuscript root (never nested under the current chapter), or top-level `.html` files in a flat binder. Nested scenes stay body text under the folder Heading 1; a file sitting on the manuscript root is itself a chapter. Ctrl+Up / Ctrl+Down reorder siblings. Uncheck Include in Compile to skip a scene or a whole folder; excluded items stay in the tree, dimmed.
 
-**The page.** The Monastery editor: Georgia, 12pt, parchment. Bold, italic, underline, lists, alignment, font family/size. CUPS print to paper or PDF — ink on white, not the leather desk.
+**The page.** The Monastery editor: Gelasio (OFL, Georgia-metric) at 12pt on parchment. Georgia in a manuscript maps to the same bundled faces. Bold, italic, underline, lists, alignment, font family/size. CUPS print to paper or PDF — ink on white, not the leather desk.
 
 **Notes.** Research, characters, scraps. Same editor. They never join compile order, never become Kindle TOC entries, and manuscript Find does not search them.
 
 **Compile.** One action writes three files:
-- `manuscript.epub` — EPUB3, the file you upload to KDP for Kindle
-- `manuscript.docx` — Kindle Create / Word-converter fallback (Heading 1 on chapter titles only; scenes stay body)
-- `manuscript.html` — a readable dump of the same order
+- `manuscript.epub` — EPUB3, the file you upload to KDP for Kindle (Gelasio faces embedded)
+- `manuscript.docx` — Kindle Create / Word-converter fallback (Heading 1 on chapter titles only; scenes stay body; Times New Roman; scene break is a centered `#`)
+- `manuscript.html` — a readable dump of the same order, with Gelasio beside it
 
 **Find.** Ctrl+F walks every manuscript scene in binder order. Uncheck Manuscript to search only the open page.
 
@@ -86,6 +86,6 @@ If CMake cannot find WebEngineWidgets: `sudo apt install qt6-webengine-dev`.
 
 ## Status
 
-0.3.13. Usable for a real draft. Binder, compile, and the page have been proven on a running binary; weekend is for living in it.
+0.3.19. Usable for a real draft. Binder, compile, and the page have been proven on a running binary; weekend is for living in it.
 
 Not a corkboard. Not a port of someone else’s app. Linux first.

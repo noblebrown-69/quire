@@ -22,6 +22,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QFile>
+#include <QIODevice>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemModel>
@@ -32,6 +33,7 @@
 #include <QLabel>
 #include <QLocale>
 #include <QFont>
+#include <QFontDatabase>
 #include <QFontComboBox>
 #include <QComboBox>
 #include <QCheckBox>
@@ -68,11 +70,12 @@
 #include <QTemporaryFile>
 #include <QSignalBlocker>
 #include <QShortcut>
+#include <QXmlStreamReader>
 #include <cstdio>
 
 namespace {
 
-const QString kQuireVersion = QStringLiteral("0.3.13");
+const QString kQuireVersion = QStringLiteral("0.3.18");
 
 QString canonicalOrAbs(const QString &path)
 {
@@ -417,6 +420,8 @@ void annotateCompileScene(EpubWriter::Scene *sc, QString *lastChapter)
 {
     if (!sc->folderTrail.isEmpty())
         sc->chapterTitle = sc->folderTrail.first();
+    else if (!sc->title.isEmpty())
+        sc->chapterTitle = sc->title;
     if (!sc->chapterTitle.isEmpty())
         sc->frontMatter = (matterKindForName(sc->chapterTitle) == MatterKind::Front);
     else
@@ -460,11 +465,18 @@ void showFamilyInCombo(QFontComboBox *combo, const QString &family)
     if (!combo || family.isEmpty())
         return;
     QSignalBlocker block(combo);
-    combo->setCurrentFont(QFont(family));
+    QString pick = family;
+    if (QString::compare(family, QStringLiteral("Georgia"), Qt::CaseInsensitive) == 0
+        && !QFontDatabase::hasFamily(QStringLiteral("Georgia"))
+        && QFontDatabase::hasFamily(QStringLiteral("Gelasio"))) {
+        pick = QStringLiteral("Gelasio");
+    }
+    combo->setCurrentFont(QFont(pick));
     if (QString::compare(combo->currentText(), family, Qt::CaseInsensitive) == 0)
         return;
     if (!combo->isEditable())
         combo->setEditable(true);
+    // Keep Scrivener's family name in the closed field when we mapped Georgia → Gelasio.
     combo->setEditText(family);
     if (QString::compare(combo->currentText(), family, Qt::CaseInsensitive) != 0)
         combo->setCurrentText(family);
@@ -525,7 +537,7 @@ QString kindleCompileHtml(const QString &title, const QString &author,
             o += QStringLiteral("<h1>%1</h1>\n").arg(sc.chapterTitle.toHtmlEscaped());
             needSceneBreak = false;
         } else if (needSceneBreak && !empty) {
-            o += QStringLiteral("<p class=\"scenebreak\">#</p>\n");
+            o += QStringLiteral("<p class=\"scene-break\">#</p>\n");
         }
         if (empty)
             continue;
@@ -641,7 +653,8 @@ QuireFrame::QuireFrame(QWidget *parent)
 
     QSettings settings(kOrg, kApp);
     const bool listen = QCoreApplication::arguments().contains(QStringLiteral("--listen"));
-    if (!listen) {
+    const bool compileOneShot = QCoreApplication::arguments().contains(QStringLiteral("--compile"));
+    if (!listen && !compileOneShot) {
         const QString last = settings.value(QStringLiteral("lastProject")).toString();
         QString project = last;
         if (project.isEmpty() || !QFileInfo::exists(project + QStringLiteral("/quire.json"))) {
@@ -1020,7 +1033,7 @@ void QuireFrame::createToolBar()
     bar->addSeparator();
     m_fontCombo = new QFontComboBox();
     m_fontCombo->setEditable(true);
-    m_fontCombo->setCurrentFont(QFont(QStringLiteral("Noto Serif")));
+    m_fontCombo->setCurrentFont(QFont(QStringLiteral("Gelasio")));
     connect(m_fontCombo, &QComboBox::textActivated, this, &QuireFrame::onFontChanged);
     bar->addWidget(m_fontCombo);
     m_sizeCombo = new QComboBox();
@@ -1890,7 +1903,13 @@ bool QuireFrame::compileToDisk(QString *error)
     for (const QString &path : scenes) {
         EpubWriter::Scene sc;
         sc.title = sceneTitleFromPath(path);
-        sc.bodyHtml = sceneBody(readTextFile(path));
+        {
+            const QString raw = readTextFile(path);
+            const QString healed = EpubWriter::healBody(raw);
+            if (healed != raw)
+                writeTextFile(path, healed);
+            sc.bodyHtml = sceneBody(healed);
+        }
         QString rel = QDir(msRoot).relativeFilePath(QFileInfo(path).absolutePath());
         if (!rel.isEmpty() && rel != QLatin1String("."))
             sc.folderTrail = rel.split(QLatin1Char('/'), Qt::SkipEmptyParts);
@@ -1898,10 +1917,105 @@ bool QuireFrame::compileToDisk(QString *error)
         epubScenes.append(sc);
     }
 
+    const QString fontOutDir = compileDir() + QStringLiteral("/fonts/gelasio");
+    QDir().mkpath(fontOutDir);
+    const QStringList gelasioFaces = {
+        QStringLiteral("Gelasio-Regular.ttf"),
+        QStringLiteral("Gelasio-Italic.ttf"),
+        QStringLiteral("Gelasio-Bold.ttf"),
+        QStringLiteral("Gelasio-BoldItalic.ttf"),
+        QStringLiteral("OFL.txt"),
+    };
+    for (const QString &name : gelasioFaces) {
+        const QString dest = fontOutDir + QLatin1Char('/') + name;
+        QFile out(dest);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            if (error)
+                *error = QStringLiteral("Compile failed writing font %1.").arg(name);
+            return false;
+        }
+        QFile in(QStringLiteral(":/fonts/gelasio/") + name);
+        if (!in.open(QIODevice::ReadOnly)) {
+            if (error)
+                *error = QStringLiteral("Missing bundled font resource: %1").arg(name);
+            return false;
+        }
+        out.write(in.readAll());
+    }
+
     QString parts;
     parts += QStringLiteral(
-        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">"
-        "<title>%1</title></head><body>\n").arg(m_projectTitle.toHtmlEscaped());
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        "<meta charset=\"utf-8\">\n"
+        "<title>%1</title>\n"
+        "<style>\n"
+        "@font-face {\n"
+        "  font-family: \"Gelasio\";\n"
+        "  src: url(\"fonts/gelasio/Gelasio-Regular.ttf\") format(\"truetype\");\n"
+        "  font-weight: 400;\n"
+        "  font-style: normal;\n"
+        "}\n"
+        "@font-face {\n"
+        "  font-family: \"Gelasio\";\n"
+        "  src: url(\"fonts/gelasio/Gelasio-Italic.ttf\") format(\"truetype\");\n"
+        "  font-weight: 400;\n"
+        "  font-style: italic;\n"
+        "}\n"
+        "@font-face {\n"
+        "  font-family: \"Gelasio\";\n"
+        "  src: url(\"fonts/gelasio/Gelasio-Bold.ttf\") format(\"truetype\");\n"
+        "  font-weight: 700;\n"
+        "  font-style: normal;\n"
+        "}\n"
+        "@font-face {\n"
+        "  font-family: \"Gelasio\";\n"
+        "  src: url(\"fonts/gelasio/Gelasio-BoldItalic.ttf\") format(\"truetype\");\n"
+        "  font-weight: 700;\n"
+        "  font-style: italic;\n"
+        "}\n"
+        "@font-face {\n"
+        "  font-family: \"Georgia\";\n"
+        "  src: url(\"fonts/gelasio/Gelasio-Regular.ttf\") format(\"truetype\");\n"
+        "  font-weight: 400;\n"
+        "  font-style: normal;\n"
+        "}\n"
+        "@font-face {\n"
+        "  font-family: \"Georgia\";\n"
+        "  src: url(\"fonts/gelasio/Gelasio-Italic.ttf\") format(\"truetype\");\n"
+        "  font-weight: 400;\n"
+        "  font-style: italic;\n"
+        "}\n"
+        "@font-face {\n"
+        "  font-family: \"Georgia\";\n"
+        "  src: url(\"fonts/gelasio/Gelasio-Bold.ttf\") format(\"truetype\");\n"
+        "  font-weight: 700;\n"
+        "  font-style: normal;\n"
+        "}\n"
+        "@font-face {\n"
+        "  font-family: \"Georgia\";\n"
+        "  src: url(\"fonts/gelasio/Gelasio-BoldItalic.ttf\") format(\"truetype\");\n"
+        "  font-weight: 700;\n"
+        "  font-style: italic;\n"
+        "}\n"
+        "body {\n"
+        "  font-family: Gelasio, Georgia, \"Times New Roman\", serif;\n"
+        "  font-size: 1em;\n"
+        "  line-height: 1.35;\n"
+        "  margin: 1em 1.2em;\n"
+        "  color: #111;\n"
+        "  background: #fff;\n"
+        "}\n"
+        "h1 { font-size: 1.6em; font-weight: bold; text-align: center; margin: 2em 0 1.2em 0; }\n"
+        "h1.chapter { text-align: center; }\n"
+        "h2 { font-size: 1.2em; font-weight: bold; margin: 1.4em 0 0.8em 0; }\n"
+        "p { margin: 0 0 0.8em 0; text-indent: 1.2em; }\n"
+        "p:first-of-type { text-indent: 0; }\n"
+        "p.scene-break, p[style*=\"text-align:center\"] { text-align: center; text-indent: 0; }\n"
+        "</style>\n"
+        "</head>\n"
+        "<body>\n").arg(m_projectTitle.toHtmlEscaped());
     for (int i = 0; i < scenes.size(); ++i) {
         const EpubWriter::Scene &sc = epubScenes.at(i);
         QString inner = EpubWriter::headingHtml(sc);
@@ -1940,8 +2054,105 @@ bool QuireFrame::compileToDisk(QString *error)
     return true;
 }
 
+int QuireFrame::runHeadlessCompile(const QString &projectDir)
+{
+    if (!openProject(projectDir, false)) {
+        std::fprintf(stdout, "compiled: epub=fail xhtml=fail heading1:0\n");
+        std::fflush(stdout);
+        return 1;
+    }
+
+    QString err;
+    const bool compiled = compileToDisk(&err);
+    const QString epub = compileDir() + QStringLiteral("/manuscript.epub");
+    const QString docx = compileDir() + QStringLiteral("/manuscript.docx");
+    const bool epubOk = QFileInfo::exists(epub);
+    bool xhtmlOk = false;
+    int h1 = 0;
+
+    if (epubOk) {
+        xhtmlOk = true;
+        bool sawXhtml = false;
+        QProcess list;
+        list.start(QStringLiteral("unzip"),
+                   {QStringLiteral("-Z"), QStringLiteral("-1"), epub});
+        if (!list.waitForFinished(15000) || list.exitCode() != 0)
+            xhtmlOk = false;
+        const QString listing = QString::fromUtf8(list.readAllStandardOutput());
+        const QStringList files = listing.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        for (const QString &f : files) {
+            if (!f.startsWith(QLatin1String("OEBPS/")) || !f.endsWith(QLatin1String(".xhtml")))
+                continue;
+            sawXhtml = true;
+            QProcess uz;
+            uz.start(QStringLiteral("unzip"), {QStringLiteral("-p"), epub, f});
+            if (!uz.waitForFinished(15000) || uz.exitCode() != 0) {
+                xhtmlOk = false;
+                break;
+            }
+            QByteArray data = uz.readAllStandardOutput();
+            data.replace("<!DOCTYPE html>", "");
+            QXmlStreamReader xml(data);
+            while (!xml.atEnd())
+                xml.readNext();
+            if (xml.hasError()) {
+                xhtmlOk = false;
+                break;
+            }
+        }
+        if (!sawXhtml)
+            xhtmlOk = false;
+    }
+
+    if (QFileInfo::exists(docx)) {
+        QProcess uz;
+        uz.start(QStringLiteral("unzip"),
+                 {QStringLiteral("-p"), docx, QStringLiteral("word/document.xml")});
+        uz.waitForFinished(8000);
+        const QString xml = QString::fromUtf8(uz.readAllStandardOutput());
+        h1 = xml.count(QStringLiteral("w:pStyle w:val=\"Heading1\""));
+    }
+
+    if (!err.isEmpty())
+        std::fprintf(stdout, "compile-error: %s\n", qPrintable(err));
+    if (!compiled && err.isEmpty())
+        std::fprintf(stdout, "compile-error: compileToDisk failed\n");
+
+    std::fprintf(stdout, "compiled: epub=%s xhtml=%s heading1:%d\n",
+                 epubOk ? "ok" : "fail",
+                 xhtmlOk ? "ok" : "fail",
+                 h1);
+
+    bool gelasioEmbed = false;
+    if (epubOk) {
+        QProcess list;
+        list.start(QStringLiteral("unzip"),
+                   {QStringLiteral("-Z"), QStringLiteral("-1"), epub});
+        if (list.waitForFinished(15000) && list.exitCode() == 0) {
+            const QString listing = QString::fromUtf8(list.readAllStandardOutput());
+            gelasioEmbed =
+                listing.contains(QLatin1String("OEBPS/fonts/Gelasio-Regular.ttf"))
+                && listing.contains(QLatin1String("OEBPS/fonts/Gelasio-Italic.ttf"))
+                && listing.contains(QLatin1String("OEBPS/fonts/Gelasio-Bold.ttf"))
+                && listing.contains(QLatin1String("OEBPS/fonts/Gelasio-BoldItalic.ttf"));
+        }
+    }
+    std::fprintf(stdout, "font-embed: gelasio=%s\n", gelasioEmbed ? "ok" : "fail");
+    std::fflush(stdout);
+    return (compiled && epubOk && xhtmlOk && gelasioEmbed) ? 0 : 1;
+}
+
 void QuireFrame::runListenProof()
 {
+    {
+        const QByteArray faces = qgetenv("QUIRE_GELASIO_FACES");
+        const bool hasG = QFontDatabase::hasFamily(QStringLiteral("Gelasio"));
+        std::fprintf(stdout, "font: gelasio=%s faces=%s\n",
+                     hasG ? "ok" : "fail",
+                     faces.isEmpty() ? "?" : faces.constData());
+        std::fflush(stdout);
+    }
+
     std::fprintf(stdout, "editor: monastery-sep1\n");
     std::fprintf(stdout, "default-root: %s\n", qPrintable(defaultManuscriptsRoot()));
 
@@ -2218,7 +2429,12 @@ void QuireFrame::loadScene(const QString &path)
         return;
     m_loadingScene = true;
     m_currentScenePath = path;
-    const QString html = readTextFile(path);
+    QString html = readTextFile(path);
+    const QString healed = EpubWriter::healBody(html);
+    if (healed != html) {
+        html = healed;
+        writeTextFile(path, html);
+    }
     if (m_editor) {
         m_editor->setHtml(html);
         m_editor->markClean();
@@ -2947,7 +3163,7 @@ void QuireFrame::applyUiFont(const Theme &theme)
     if (theme.themeId == ThemeId::WordPerfect)
         ui.setFamilies({"IBM Plex Mono", "Fixed", "Courier New", "DejaVu Sans Mono", "sans-serif"});
     else if (theme.themeId == ThemeId::Leather)
-        ui.setFamilies({"Noto Serif", "Georgia", "serif"});
+        ui.setFamilies({"Gelasio", "Georgia", "Noto Serif", "serif"});
     else
         ui.setFamilies({"Courier New", "Liberation Mono", "DejaVu Sans Mono", "monospace"});
     ui.setPointSize(10);

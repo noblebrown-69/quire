@@ -5,6 +5,10 @@
 #include <QByteArray>
 #include <QList>
 #include <QTimer>
+#include <QFontDatabase>
+#include <QDir>
+#include <QStandardPaths>
+#include <QIODevice>
 #include <cstdio>
 #include <cstring>
 #include "QuireFrame.h"
@@ -37,6 +41,96 @@ static QByteArray firstExistingDir(const QList<QByteArray> &paths)
             return p;
     }
     return {};
+}
+
+
+
+static void setupAppImageFontconfig()
+{
+    const QByteArray appdir = qgetenv("APPDIR");
+    if (appdir.isEmpty())
+        return;
+    const QString conf = QString::fromLocal8Bit(appdir)
+        + QStringLiteral("/usr/share/fonts/truetype/gelasio/fonts.conf");
+    if (QFileInfo::exists(conf) && qgetenv("FONTCONFIG_FILE").isEmpty())
+        qputenv("FONTCONFIG_FILE", conf.toLocal8Bit());
+}
+
+static void setupBundledFonts()
+{
+    // Prefer AppImage-shipped Gelasio; else extract OFL faces from qrc for fontconfig + Qt.
+    QString fontDir;
+    const QByteArray appdir = qgetenv("APPDIR");
+    if (!appdir.isEmpty()) {
+        const QString candidate = QString::fromLocal8Bit(appdir)
+            + QStringLiteral("/usr/share/fonts/truetype/gelasio");
+        if (QFileInfo::exists(candidate + QStringLiteral("/Gelasio-Regular.ttf")))
+            fontDir = candidate;
+    }
+    if (fontDir.isEmpty()) {
+        fontDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+            + QStringLiteral("/fonts/gelasio");
+        QDir().mkpath(fontDir);
+        const QStringList faces = {
+            QStringLiteral("Gelasio-Regular.ttf"),
+            QStringLiteral("Gelasio-Italic.ttf"),
+            QStringLiteral("Gelasio-Bold.ttf"),
+            QStringLiteral("Gelasio-BoldItalic.ttf"),
+            QStringLiteral("OFL.txt"),
+        };
+        for (const QString &name : faces) {
+            const QString dest = fontDir + QLatin1Char('/') + name;
+            if (QFileInfo::exists(dest))
+                continue;
+            QFile in(QStringLiteral(":/fonts/gelasio/") + name);
+            if (!in.open(QIODevice::ReadOnly))
+                continue;
+            QFile out(dest);
+            if (out.open(QIODevice::WriteOnly))
+                out.write(in.readAll());
+        }
+    }
+
+    const QString confPath = fontDir + QStringLiteral("/fonts.conf");
+    {
+        QFile conf(confPath);
+        if (conf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QByteArray xml;
+            xml += "<?xml version=\"1.0\"?>\n";
+            xml += "<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n";
+            xml += "<fontconfig>\n";
+            xml += "  <dir>" + fontDir.toUtf8() + "</dir>\n";
+            xml += "  <alias binding=\"same\">\n";
+            xml += "    <family>Georgia</family>\n";
+            xml += "    <prefer><family>Gelasio</family></prefer>\n";
+            xml += "  </alias>\n";
+            xml += "  <match target=\"pattern\">\n";
+            xml += "    <test qual=\"any\" name=\"family\"><string>Georgia</string></test>\n";
+            xml += "    <edit name=\"family\" mode=\"prepend\" binding=\"strong\">";
+            xml += "<string>Gelasio</string></edit>\n";
+            xml += "  </match>\n";
+            xml += "</fontconfig>\n";
+            conf.write(xml);
+        }
+    }
+    if (QFileInfo::exists(confPath))
+        qputenv("FONTCONFIG_FILE", confPath.toLocal8Bit());
+
+    const QStringList ttf = {
+        QStringLiteral("Gelasio-Regular.ttf"),
+        QStringLiteral("Gelasio-Italic.ttf"),
+        QStringLiteral("Gelasio-Bold.ttf"),
+        QStringLiteral("Gelasio-BoldItalic.ttf"),
+    };
+    int ok = 0;
+    for (const QString &name : ttf) {
+        const QString path = fontDir + QLatin1Char('/') + name;
+        if (QFontDatabase::addApplicationFont(path) >= 0)
+            ++ok;
+        else if (QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/gelasio/") + name) >= 0)
+            ++ok;
+    }
+    qputenv("QUIRE_GELASIO_FACES", QByteArray::number(ok));
 }
 
 static void setupWebEnginePrefix()
@@ -90,17 +184,29 @@ int main(int argc, char *argv[])
 {
     bool listen = false;
     bool importScriv = false;
+    bool compileOneShot = false;
     QByteArray importIn;
     QByteArray importOut;
+    QByteArray compileDir;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
-            std::fprintf(stdout, "Usage: Quire [--listen] [--import-scriv IN.scriv OUT.qr]\n");
+            std::fprintf(stdout, "Usage: Quire [--listen] [--compile DIR] [--import-scriv IN.scriv OUT.qr]\n");
             std::fprintf(stdout, "  --listen   load editor, compile Kindle DOCX fixture, print health, quit\n");
+            std::fprintf(stdout, "  --compile DIR   open DIR, compileToDisk, print epub/xhtml/heading1, quit\n");
             std::fprintf(stdout, "  --import-scriv IN.scriv OUT.qr   copy Scrivener binder into a new .qr and exit\n");
             return 0;
         }
         if (std::strcmp(argv[i], "--listen") == 0) {
             listen = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--compile") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Quire: --compile requires DIR\n");
+                return 1;
+            }
+            compileOneShot = true;
+            compileDir = argv[++i];
             continue;
         }
         if (std::strcmp(argv[i], "--import-scriv") == 0) {
@@ -116,6 +222,7 @@ int main(int argc, char *argv[])
     }
 
     setupWebEnginePrefix();
+    setupAppImageFontconfig();
 
     if (listen && !importScriv) {
         const QByteArray we = qgetenv("QTWEBENGINEPROCESS_PATH");
@@ -124,8 +231,9 @@ int main(int argc, char *argv[])
     }
 
     QApplication app(argc, argv);
+    setupBundledFonts();
     app.setApplicationName(QStringLiteral("Quire"));
-    app.setApplicationVersion(QStringLiteral("0.3.13"));
+    app.setApplicationVersion(QStringLiteral("0.3.19"));
     app.setOrganizationName(QStringLiteral("Sociopathletic"));
     app.setOrganizationDomain(QStringLiteral("sociopathletic.com"));
 
@@ -148,6 +256,9 @@ int main(int argc, char *argv[])
     }
 
     QuireFrame frame;
+    if (compileOneShot) {
+        return frame.runHeadlessCompile(QString::fromLocal8Bit(compileDir));
+    }
     frame.show();
     frame.raise();
     frame.activateWindow();

@@ -35,6 +35,7 @@ class QuireFrame : public QMainWindow {
 public:
     explicit QuireFrame(QWidget *parent = nullptr);
     ~QuireFrame() override;
+    int runHeadlessCompile(const QString &projectDir);
 
 protected:
     void closeEvent(QCloseEvent *event) override;

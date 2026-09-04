@@ -850,7 +850,8 @@ QVector<Block> parseKindleHtmlBlocks(QString html)
                     type = Block::Title;
                 else if (classHas(cls, QStringLiteral("kindle-author")))
                     type = Block::Author;
-                else if (classHas(cls, QStringLiteral("scenebreak")))
+                else if (classHas(cls, QStringLiteral("scenebreak"))
+                         || classHas(cls, QStringLiteral("scene-break")))
                     type = Block::SceneBreak;
                 else
                     type = Block::Paragraph;
@@ -1149,6 +1150,17 @@ QString blocksToDocumentXml(const QVector<Block> &blocks)
            + body + QStringLiteral("</w:body></w:document>");
 }
 
+bool isKindleSceneBreakPlain(const QString &plain)
+{
+    const QString t = plain.trimmed();
+    return t == QLatin1String(">>--->")
+        || t == QLatin1String("#")
+        || t == QLatin1String("***")
+        || t == QLatin1String("* * *")
+        || t == QLatin1String("•••")
+        || t == QString::fromUtf8("• • •");
+}
+
 QVector<InlineRun> kindleStripRunFonts(QVector<InlineRun> runs)
 {
     for (InlineRun &r : runs) {
@@ -1192,15 +1204,16 @@ QString kindleDocumentXml(const QVector<Block> &blocks)
             lastWasBreak = false;
             continue;
         }
-        if (b.type == Block::SceneBreak) {
-            if (runsToPlain(runs).isEmpty()) {
+        {
+            const QString plain = runsToPlain(runs);
+            if (b.type == Block::SceneBreak || isKindleSceneBreakPlain(plain)) {
                 InlineRun hash;
                 hash.text = QStringLiteral("#");
                 runs = {hash};
+                body += paragraphWml(QStringLiteral("SceneBreak"), runs);
+                lastWasBreak = false;
+                continue;
             }
-            body += paragraphWml(QStringLiteral("SceneBreak"), runs);
-            lastWasBreak = false;
-            continue;
         }
         if (b.type == Block::Table) {
             for (const TableRow &row : b.rows) {
