@@ -187,6 +187,14 @@ void MonasteryEditor::insertChecklist()
     markDirty();
 }
 
+void MonasteryEditor::insertPageBreak()
+{
+    if (!m_isLoaded) return;
+    m_webView->page()->runJavaScript(QStringLiteral("insertPageBreak();"));
+    markDirty();
+}
+
+
 void MonasteryEditor::execCommand(const QString &cmd, const QString &value)
 {
     if (!m_isLoaded) return;

@@ -784,7 +784,8 @@ QVector<Block> parseKindleHtmlBlocks(QString html)
             continue;
 
         const QString cls = attrValue(raw, QStringLiteral("class"));
-        if (!closing && classHas(cls, QStringLiteral("pagebreak"))) {
+        if (!closing && (classHas(cls, QStringLiteral("pagebreak"))
+                          || classHas(cls, QStringLiteral("page-break")))) {
             flushBlock(blocks, runs, buf, st, type);
             Block b;
             b.type = Block::PageBreak;

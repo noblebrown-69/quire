@@ -14,6 +14,7 @@ public:
     explicit MonasteryEditor(QWidget *parent = nullptr);
     void execCommand(const QString &cmd, const QString &value = QString());
     void insertChecklist();
+    void insertPageBreak();
     QString getHtml();
     void setHtml(const QString &html);
     int getWordCount();

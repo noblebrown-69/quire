@@ -11,3 +11,8 @@ Manuscripts/
 proof/
 quire_0312_edit.py
 CHANGELOG.md
+_tools/pdfvenv/
+Quire.AppImage.pre-*
+Quire.desktop
+rebuild.sh
+_pdf_preview/

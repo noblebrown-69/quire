@@ -9,6 +9,7 @@
 #include <QByteArray>
 #include <QList>
 #include "Theme.h"
+#include <QPageLayout>
 
 class MonasteryEditor;
 class QFileSystemModel;
@@ -26,6 +27,8 @@ class QFontComboBox;
 class QComboBox;
 class QCheckBox;
 class QTemporaryFile;
+class QTemporaryDir;
+class QWebEnginePage;
 class QToolBar;
 class QMenu;
 
@@ -36,6 +39,7 @@ public:
     explicit QuireFrame(QWidget *parent = nullptr);
     ~QuireFrame() override;
     int runHeadlessCompile(const QString &projectDir);
+    int runPrintProof(const QString &projectDir);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -71,6 +75,7 @@ private slots:
     void onSizeChanged(const QString &size);
     void onSelectionFontChanged(const QString &family, int pt);
     void onPrint();
+    void onPrintCurrentScene();
     void onPdfPrintingFinished(const QString &path, bool success);
     void onAutoSave();
     void onTreeClicked(const QModelIndex &index);
@@ -130,6 +135,11 @@ private:
     void loadScene(const QString &path);
     void clearEditor();
     void collectScenes(const QString &dir, QStringList *out, bool includeExcluded = false) const;
+    void collectNotesHtml(const QString &dir, QStringList *out) const;
+    QStringList resolvePrintScope(QString *labelOut = nullptr) const;
+    QString buildPrintHtml(const QStringList &scenePaths) const;
+    void beginScopedPrint(const QString &html, const QPageLayout &layout,
+                          const QString &outputPdf, bool cupsJob);
     QString sceneBinderLabel(const QString &path) const;
     QString sceneHtmlForFind(const QString &path) const;
     QString nextSceneWithNeedle(const QString &needle, bool backward) const;
@@ -205,6 +215,7 @@ private:
     QAction *m_aboutAction = nullptr;
     QAction *m_quitAction = nullptr;
     QAction *m_printAction = nullptr;
+    QAction *m_printCurrentSceneAction = nullptr;
     QAction *m_focusAction = nullptr;
     QAction *m_prevSceneAction = nullptr;
     QAction *m_nextSceneAction = nullptr;
@@ -216,6 +227,8 @@ private:
     QFontComboBox *m_fontCombo = nullptr;
     QComboBox *m_sizeCombo = nullptr;
     QTemporaryFile *m_printTemp = nullptr;
+    QTemporaryDir *m_printHtmlDir = nullptr;
+    QWebEnginePage *m_printPage = nullptr;
     QString m_pendingLpPdf;
     QString m_pendingLpPrinter;
     int m_pendingLpCopies = 1;

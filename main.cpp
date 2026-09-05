@@ -185,14 +185,17 @@ int main(int argc, char *argv[])
     bool listen = false;
     bool importScriv = false;
     bool compileOneShot = false;
+    bool printProof = false;
     QByteArray importIn;
     QByteArray importOut;
     QByteArray compileDir;
+    QByteArray printProofDir;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
-            std::fprintf(stdout, "Usage: Quire [--listen] [--compile DIR] [--import-scriv IN.scriv OUT.qr]\n");
+            std::fprintf(stdout, "Usage: Quire [--listen] [--compile DIR] [--print-proof DIR] [--import-scriv IN.scriv OUT.qr]\n");
             std::fprintf(stdout, "  --listen   load editor, compile Kindle DOCX fixture, print health, quit\n");
             std::fprintf(stdout, "  --compile DIR   open DIR, compileToDisk, print epub/xhtml/heading1, quit\n");
+            std::fprintf(stdout, "  --print-proof DIR   open DIR, build lean print HTML + PDF proof, quit\n");
             std::fprintf(stdout, "  --import-scriv IN.scriv OUT.qr   copy Scrivener binder into a new .qr and exit\n");
             return 0;
         }
@@ -207,6 +210,15 @@ int main(int argc, char *argv[])
             }
             compileOneShot = true;
             compileDir = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--print-proof") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Quire: --print-proof requires DIR\n");
+                return 1;
+            }
+            printProof = true;
+            printProofDir = argv[++i];
             continue;
         }
         if (std::strcmp(argv[i], "--import-scriv") == 0) {
@@ -233,7 +245,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     setupBundledFonts();
     app.setApplicationName(QStringLiteral("Quire"));
-    app.setApplicationVersion(QStringLiteral("0.3.19"));
+    app.setApplicationVersion(QStringLiteral("0.3.28"));
     app.setOrganizationName(QStringLiteral("Sociopathletic"));
     app.setOrganizationDomain(QStringLiteral("sociopathletic.com"));
 
@@ -258,6 +270,9 @@ int main(int argc, char *argv[])
     QuireFrame frame;
     if (compileOneShot) {
         return frame.runHeadlessCompile(QString::fromLocal8Bit(compileDir));
+    }
+    if (printProof) {
+        return frame.runPrintProof(QString::fromLocal8Bit(printProofDir));
     }
     frame.show();
     frame.raise();

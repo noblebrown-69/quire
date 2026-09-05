@@ -59,15 +59,18 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QWebEnginePage>
+#include <QUrl>
 #include <QWebEngineFindTextResult>
 #include <QPrinter>
 #include <QPrintDialog>
 #include <QPrinterInfo>
 #include <QPageLayout>
 #include <QPageSize>
+#include <QSizeF>
 #include <QMarginsF>
 #include <QProcess>
 #include <QTemporaryFile>
+#include <QTemporaryDir>
 #include <QSignalBlocker>
 #include <QShortcut>
 #include <QXmlStreamReader>
@@ -75,7 +78,7 @@
 
 namespace {
 
-const QString kQuireVersion = QStringLiteral("0.3.18");
+const QString kQuireVersion = QStringLiteral("0.3.28");
 
 QString canonicalOrAbs(const QString &path)
 {
@@ -399,9 +402,13 @@ MatterKind matterKindForName(const QString &name)
         QStringLiteral("Front Matter"),
         QStringLiteral("Frontmatter"),
         QStringLiteral("Title"),
+        QStringLiteral("Title Page"),
         QStringLiteral("Dedication"),
         QStringLiteral("Copyright"),
+        QStringLiteral("Copyright Page"),
         QStringLiteral("Preface"),
+        QStringLiteral("Intro"),
+        QStringLiteral("Introduction"),
     };
     static const QStringList back{
         QStringLiteral("Back Matter"),
@@ -435,11 +442,134 @@ void annotateCompileScene(EpubWriter::Scene *sc, QString *lastChapter)
 }
 
 
+QString gelasioPrintFontFaceCss(const QString &urlPrefix = QStringLiteral("fonts/gelasio/"))
+{
+    const QString prefix = urlPrefix.isEmpty()
+                               ? QStringLiteral("fonts/gelasio/")
+                               : (urlPrefix.endsWith(QLatin1Char('/'))
+                                      ? urlPrefix
+                                      : urlPrefix + QLatin1Char('/'));
+    auto faceUrl = [&](const QString &fileName) -> QString {
+        return prefix + fileName;
+    };
+    const QString regular = faceUrl(QStringLiteral("Gelasio-Regular.ttf"));
+    const QString italic = faceUrl(QStringLiteral("Gelasio-Italic.ttf"));
+    const QString bold = faceUrl(QStringLiteral("Gelasio-Bold.ttf"));
+    const QString boldItalic = faceUrl(QStringLiteral("Gelasio-BoldItalic.ttf"));
+    QString css;
+    auto face = [&](const QString &family, const QString &url, const char *weight, const char *style) {
+        css += QStringLiteral(
+            "@font-face {\n"
+            "  font-family: \"%1\";\n"
+            "  src: url(\"%2\") format(\"truetype\");\n"
+            "  font-weight: %3;\n"
+            "  font-style: %4;\n"
+            "}\n").arg(family, url, QLatin1String(weight), QLatin1String(style));
+    };
+    // Shared (File→Print): one family, four faces — Chromium print path may still
+    // pick Italic for body; paperback uses gelasioPaperbackFontFaceCss instead.
+    face(QStringLiteral("Gelasio"), regular, "400", "normal");
+    face(QStringLiteral("Gelasio"), italic, "400", "italic");
+    face(QStringLiteral("Gelasio"), bold, "700", "normal");
+    face(QStringLiteral("Gelasio"), boldItalic, "700", "italic");
+    face(QStringLiteral("Georgia"), regular, "400", "normal");
+    face(QStringLiteral("Georgia"), italic, "400", "italic");
+    face(QStringLiteral("Georgia"), bold, "700", "normal");
+    face(QStringLiteral("Georgia"), boldItalic, "700", "italic");
+    return css;
+}
+
+// Distinct families so Chromium/WebEngine printToPdf cannot paint body with Italic.
+QString gelasioPaperbackFontFaceCss(const QString &urlPrefix = QStringLiteral("fonts/gelasio/"))
+{
+    const QString prefix = urlPrefix.isEmpty()
+                               ? QStringLiteral("fonts/gelasio/")
+                               : (urlPrefix.endsWith(QLatin1Char('/'))
+                                      ? urlPrefix
+                                      : urlPrefix + QLatin1Char('/'));
+    auto faceUrl = [&](const QString &fileName) -> QString {
+        return prefix + fileName;
+    };
+    const QString regular = faceUrl(QStringLiteral("Gelasio-Regular.ttf"));
+    const QString italic = faceUrl(QStringLiteral("Gelasio-Italic.ttf"));
+    const QString bold = faceUrl(QStringLiteral("Gelasio-Bold.ttf"));
+    const QString boldItalic = faceUrl(QStringLiteral("Gelasio-BoldItalic.ttf"));
+    QString css;
+    auto face = [&](const QString &family, const QString &url, const char *weight, const char *style) {
+        css += QStringLiteral(
+            "@font-face {\n"
+            "  font-family: \"%1\";\n"
+            "  src: url(\"%2\") format(\"truetype\");\n"
+            "  font-weight: %3;\n"
+            "  font-style: %4;\n"
+            "}\n").arg(family, url, QLatin1String(weight), QLatin1String(style));
+    };
+    // Unique family names (not "Gelasio") so fontconfig's multi-face Gelasio cannot
+    // win over @font-face. font-style:normal on every face — italic/bold glyphs are
+    // already in the TTF; asking for style:italic restarts Chromium's bad matcher.
+    face(QStringLiteral("QuireRoman"), regular, "400", "normal");
+    face(QStringLiteral("QuireItalic"), italic, "400", "normal");
+    face(QStringLiteral("QuireBold"), bold, "700", "normal");
+    face(QStringLiteral("QuireBoldItalic"), boldItalic, "700", "normal");
+    return css;
+}
+
+bool copyGelasioFontsToDir(const QString &fontOutDir, QString *error)
+{
+    if (!QDir().mkpath(fontOutDir)) {
+        if (error)
+            *error = QStringLiteral("Could not create font directory: %1").arg(fontOutDir);
+        return false;
+    }
+    const QStringList gelasioFaces = {
+        QStringLiteral("Gelasio-Regular.ttf"),
+        QStringLiteral("Gelasio-Italic.ttf"),
+        QStringLiteral("Gelasio-Bold.ttf"),
+        QStringLiteral("Gelasio-BoldItalic.ttf"),
+        QStringLiteral("OFL.txt"),
+    };
+    for (const QString &name : gelasioFaces) {
+        const QString dest = fontOutDir + QLatin1Char('/') + name;
+        QFile out(dest);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            if (error)
+                *error = QStringLiteral("Failed writing font %1.").arg(name);
+            return false;
+        }
+        QFile in(QStringLiteral(":/fonts/gelasio/") + name);
+        if (!in.open(QIODevice::ReadOnly)) {
+            if (error)
+                *error = QStringLiteral("Missing bundled font resource: %1").arg(name);
+            return false;
+        }
+        out.write(in.readAll());
+    }
+    return true;
+}
+
 QPageLayout defaultPrintPageLayout()
 {
     return QPageLayout(QPageSize(QPageSize::Letter),
                        QPageLayout::Portrait,
                        QMarginsF(0.75, 0.75, 0.75, 0.75),
+                       QPageLayout::Inch);
+}
+
+QPageLayout paperbackPdfPageLayout(double leftIn, double rightIn)
+{
+    // 5×8in trim, no bleed. QMarginsF(left, top, right, bottom).
+    // Top/bottom lock 0.75in measured ink. Outside 0.5; inside/gutter from caller.
+    // WebEngine printToPdf + Ghostscript pdfwrite paint first-line ink ~4.3pt into the
+    // nominal top margin on 5×8; bump layout top so pdftotext yMin lands ≈54pt (0.75in).
+    // Bottom stays 0.75 (GS shift only adds slack below). True mirror via recto/verso
+    // QPageLayouts + pdfunite in writePaperbackPdfFile (CSS @page :left/:right ignored).
+    constexpr double kTopBiasPt = 4.6; // measured 54 - ~49.7 on 0.3.26; 4.3→4.6 after 0.746in verify
+    const double topIn = 0.75 + kTopBiasPt / 72.0;
+    const QPageSize trim(QSizeF(5.0, 8.0), QPageSize::Inch,
+                         QStringLiteral("Quire 5x8"));
+    return QPageLayout(trim,
+                       QPageLayout::Portrait,
+                       QMarginsF(leftIn, topIn, rightIn, 0.75),
                        QPageLayout::Inch);
 }
 
@@ -516,6 +646,544 @@ bool isKindleTitlePageScene(const EpubWriter::Scene &sc)
 {
     return sc.title.compare(QStringLiteral("Title Page"), Qt::CaseInsensitive) == 0;
 }
+
+// After chapter H1: mark location/date <p><em>…</em></p> lines and the first
+// story paragraph with class chapter-open so text-indent stays 0 (h1+p alone
+// only clears the first sibling; Prologue/Ch25 put date + story after that).
+QString markPaperbackChapterOpenParas(QString body)
+{
+    static const QRegularExpression pRe(
+        QStringLiteral(R"~(^\s*<p(\b[^>]*)>([\s\S]*?)</p>)~"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression tagRe(QStringLiteral("<[^>]+>"));
+    static const QRegularExpression emOnlyRe(
+        QStringLiteral(R"~(^\s*<(em|i)\b[^>]*>[\s\S]*?</\1>\s*$)~"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression classRe(
+        QStringLiteral(R"~(class\s*=\s*"([^"]*)")~"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    QString out;
+    for (int n = 0; n < 8; ++n) {
+        const QRegularExpressionMatch m = pRe.match(body);
+        if (!m.hasMatch() || m.capturedStart() != 0)
+            break;
+        QString attrs = m.captured(1);
+        const QString inner = m.captured(2);
+        QString plain = inner;
+        plain.remove(tagRe);
+        plain.replace(QLatin1String("&nbsp;"), QStringLiteral(" "), Qt::CaseInsensitive);
+        plain.replace(QLatin1String("&#160;"), QStringLiteral(" "));
+        plain = plain.trimmed();
+        const bool emOnly = emOnlyRe.match(inner).hasMatch();
+        const bool locationLike = plain.isEmpty() || (emOnly && plain.size() <= 64);
+        if (!attrs.contains(QStringLiteral("chapter-open"), Qt::CaseInsensitive)) {
+            const QRegularExpressionMatch cm = classRe.match(attrs);
+            if (cm.hasMatch()) {
+                attrs.replace(cm.capturedStart(1), cm.capturedLength(1),
+                              cm.captured(1) + QStringLiteral(" chapter-open"));
+            } else {
+                attrs += QStringLiteral(" class=\"chapter-open\"");
+            }
+        }
+        out += QStringLiteral("<p%1>%2</p>").arg(attrs, inner);
+        body = body.mid(m.capturedLength());
+        if (!locationLike)
+            break;
+    }
+    return out + body;
+}
+
+QString buildPaperbackPdfHtml(const QString &bookTitle,
+                              const QVector<EpubWriter::Scene> &scenes,
+                              double gutterIn = 0.875,
+                              bool frontOnly = false)
+{
+    Q_UNUSED(gutterIn); // gutter applied via QPageLayout in writePaperbackPdfFile (true mirror)
+    QString parts;
+    parts += QStringLiteral(
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        "<meta charset=\"utf-8\">\n"
+        "<title>%1</title>\n"
+        "<style>\n"
+        "%2"
+        "@page { size: 5in 8in; margin: 0; }\n"
+        "html, body, p, div, span, li, td, th {\n"
+        "  font-family: QuireRoman, \"Times New Roman\", serif;\n"
+        "  font-style: normal !important;\n"
+        "  font-weight: 400;\n"
+        "  font-size: 10.5pt;\n"
+        "  line-height: 1.25;\n"
+        "  margin: 0;\n"
+        "  padding: 0;\n"
+        "  color: #000;\n"
+        "  background: #fff;\n"
+        "}\n"
+        "em, i {\n"
+        "  font-family: QuireItalic, QuireRoman, serif !important;\n"
+        "  font-style: normal !important;\n"
+        "  font-weight: 400;\n"
+        "}\n"
+        "strong, b {\n"
+        "  font-family: QuireBold, QuireRoman, serif !important;\n"
+        "  font-style: normal !important;\n"
+        "  font-weight: 700;\n"
+        "}\n"
+        "em strong, strong em, i b, b i {\n"
+        "  font-family: QuireBoldItalic, QuireBold, QuireItalic, QuireRoman, serif !important;\n"
+        "  font-style: normal !important;\n"
+        "  font-weight: 700;\n"
+        "}\n"
+        "h1, h1.chapter {\n"
+        "  font-family: QuireBold, QuireRoman, \"Times New Roman\", serif;\n"
+        "  font-size: 13pt;\n"
+        "  font-weight: 700;\n"
+        "  font-style: normal !important;\n"
+        "  text-align: center;\n"
+        "  margin: 0 0 1.1em 0;\n"
+        "}\n"
+        "h1.chapter {\n"
+        "  page-break-before: always;\n"
+        "  break-before: page;\n"
+        "}\n"
+        "h2 {\n"
+        "  font-family: QuireBold, QuireRoman, serif;\n"
+        "  font-size: 11.5pt;\n"
+        "  font-weight: 700;\n"
+        "  font-style: normal !important;\n"
+        "  text-align: center;\n"
+        "  margin: 1em 0 0.7em 0;\n"
+        "}\n"
+        "p {\n"
+        "  margin: 0 0 0.55em 0;\n"
+        "  text-indent: 1.2em;\n"
+        "  text-align: justify;\n"
+        "}\n"
+        "p:first-of-type,\n"
+        "h1 + p,\n"
+        "h2 + p,\n"
+        ".scene-break + p,\n"
+        "p.scene-break,\n"
+        "p.chapter-open,\n"
+        "p[style*=\"text-align:center\"],\n"
+        "p[style*=\"text-align: center\"],\n"
+        "div[style*=\"text-align:center\"],\n"
+        "div[style*=\"text-align: center\"] {\n"
+        "  text-indent: 0;\n"
+        "}\n"
+        "p.scene-break {\n"
+        "  text-align: center;\n"
+        "  margin: 0.85em 0;\n"
+        "}\n"
+        ".page-break, .pagebreak {\n"
+        "  break-after: page;\n"
+        "  page-break-after: always;\n"
+        "  border: none;\n"
+        "  margin: 0;\n"
+        "  height: 0;\n"
+        "}\n"
+        ".blank-page {\n"
+        "  min-height: 1px;\n"
+        "  margin: 0;\n"
+        "  padding: 0;\n"
+        "  border: none;\n"
+        "  color: transparent;\n"
+        "  visibility: hidden;\n"
+        "}\n"
+        "section.compile-scene { display: block; }\n"
+        "@media print {\n"
+        "  html, body { color: #000 !important; background: #fff !important; }\n"
+        "}\n"
+        "</style>\n"
+        "</head>\n"
+        "<body>\n")
+        .arg(bookTitle.toHtmlEscaped(),
+             gelasioPaperbackFontFaceCss());
+
+    static const QRegularExpression emptyEm(
+        QStringLiteral("<(em|i)(?:\\s[^>]*)?>\\s*</\\1>"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    const QString blankAfterDedication = QStringLiteral(
+        "<section class=\"compile-scene blank-leaf\" aria-hidden=\"true\">\n"
+        "<div class=\"page-break\"></div>\n"
+        "<div class=\"blank-page\">&nbsp;</div>\n"
+        "<!-- blank leaf: next h1.chapter page-break-before starts body on following recto -->\n"
+        "</section>\n");
+
+    bool needSceneBreak = false;
+    bool pendingBlankAfterFront = false;
+    bool insertedBlankAfterFront = false;
+    auto insertBlankLeaf = [&]() {
+        if (insertedBlankAfterFront)
+            return;
+        parts += blankAfterDedication;
+        insertedBlankAfterFront = true;
+        pendingBlankAfterFront = false;
+    };
+
+    for (const EpubWriter::Scene &sc : scenes) {
+        if (frontOnly && !sc.frontMatter)
+            continue;
+        // After dedication / last Intro front matter: one blank leaf so body PN1 is recto.
+        if (!sc.frontMatter && pendingBlankAfterFront)
+            insertBlankLeaf();
+        QString inner = EpubWriter::headingHtml(sc);
+        QString body = EpubWriter::sanitizeBody(sc.bodyHtml);
+        body.remove(emptyEm);
+        // Drop empty shells left after stripping empty <em></em>.
+        static const QRegularExpression emptyP(
+            QStringLiteral("<p\\b[^>]*>\\s*</p>"),
+            QRegularExpression::CaseInsensitiveOption);
+        body.remove(emptyP);
+        if (sc.startChapter && !sc.chapterTitle.isEmpty())
+            body = markPaperbackChapterOpenParas(body);
+        const bool empty = EpubWriter::isVisuallyEmpty(body);
+        if (sc.startChapter && !sc.chapterTitle.isEmpty())
+            needSceneBreak = false;
+        else if (needSceneBreak && !empty && !sc.frontMatter) {
+            if (!inner.isEmpty())
+                inner += QLatin1Char('\n');
+            inner += QStringLiteral("<p class=\"scene-break\">#</p>");
+        }
+        if (!inner.isEmpty() && !body.isEmpty())
+            inner += QLatin1Char('\n');
+        inner += body;
+        if (inner.trimmed().isEmpty())
+            continue;
+        parts += QStringLiteral("<section class=\"compile-scene\">\n%1\n</section>\n")
+                     .arg(inner);
+        if (sc.frontMatter)
+            pendingBlankAfterFront = true;
+        if (!empty && !sc.frontMatter)
+            needSceneBreak = true;
+    }
+    // frontOnly probe must count the blank so Ghostscript skips PN on it.
+    if (pendingBlankAfterFront)
+        insertBlankLeaf();
+    parts += QStringLiteral("</body></html>\n");
+    return parts;
+}
+
+bool writeTextFilePath(const QString &path, const QString &text)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        return false;
+    const QByteArray bytes = text.toUtf8();
+    return f.write(bytes) == bytes.size();
+}
+
+bool printWebEnginePdf(QWebEnginePage *page, const QString &pdfPath,
+                       const QPageLayout &layout, QString *error)
+{
+    QFile::remove(pdfPath);
+    QEventLoop loop;
+    bool pdfDone = false;
+    bool pdfSuccess = false;
+    QObject::connect(page, &QWebEnginePage::pdfPrintingFinished, &loop,
+                     [&](const QString &path, bool success) {
+        Q_UNUSED(path);
+        pdfDone = true;
+        pdfSuccess = success;
+        loop.quit();
+    });
+    QTimer::singleShot(180000, &loop, &QEventLoop::quit);
+    page->printToPdf(pdfPath, layout);
+    loop.exec();
+    const qint64 bytes = QFileInfo(pdfPath).size();
+    if (!pdfDone || !pdfSuccess || bytes < 10000) {
+        if (error)
+            *error = QStringLiteral("Paperback PDF: printToPdf failed (bytes=%1).")
+                         .arg(bytes);
+        return false;
+    }
+    return true;
+}
+
+int pdfPageCountWithPdfinfo(const QString &pdfPath)
+{
+    QProcess proc;
+    proc.start(QStringLiteral("pdfinfo"), QStringList{pdfPath});
+    if (!proc.waitForFinished(30000) || proc.exitCode() != 0)
+        return -1;
+    const QString out = QString::fromUtf8(proc.readAllStandardOutput());
+    static const QRegularExpression re(QStringLiteral("^Pages:\\s*(\\d+)"),
+                                       QRegularExpression::MultilineOption);
+    const QRegularExpressionMatch m = re.match(out);
+    return m.hasMatch() ? m.captured(1).toInt() : -1;
+}
+
+bool mergeMirroredPaperbackPdf(const QString &rectoPdf, const QString &versoPdf,
+                               const QString &outPdf, QString *error)
+{
+    // Odd pages from recto (gutter left); even pages from verso (gutter right).
+    const int pages = pdfPageCountWithPdfinfo(rectoPdf);
+    const int pagesV = pdfPageCountWithPdfinfo(versoPdf);
+    if (pages < 1 || pages != pagesV) {
+        if (error)
+            *error = QStringLiteral("Paperback PDF: recto/verso page count mismatch (%1 vs %2).")
+                         .arg(pages).arg(pagesV);
+        return false;
+    }
+
+    QTemporaryDir parts;
+    if (!parts.isValid()) {
+        if (error)
+            *error = QStringLiteral("Paperback PDF: could not stage page parts.");
+        return false;
+    }
+    const QString rectoSep = parts.filePath(QStringLiteral("r-%04d.pdf"));
+    const QString versoSep = parts.filePath(QStringLiteral("v-%04d.pdf"));
+
+    {
+        QProcess sep;
+        sep.start(QStringLiteral("pdfseparate"), QStringList{rectoPdf, rectoSep});
+        if (!sep.waitForFinished(120000) || sep.exitCode() != 0) {
+            if (error)
+                *error = QStringLiteral("Paperback PDF: pdfseparate recto failed.");
+            return false;
+        }
+    }
+    {
+        QProcess sep;
+        sep.start(QStringLiteral("pdfseparate"), QStringList{versoPdf, versoSep});
+        if (!sep.waitForFinished(120000) || sep.exitCode() != 0) {
+            if (error)
+                *error = QStringLiteral("Paperback PDF: pdfseparate verso failed.");
+            return false;
+        }
+    }
+
+    QStringList uniteArgs;
+    for (int i = 1; i <= pages; ++i) {
+        const QString leaf = (i % 2 == 1)
+                                 ? QStringLiteral("r-%1.pdf")
+                                 : QStringLiteral("v-%1.pdf");
+        uniteArgs << parts.filePath(leaf.arg(i, 4, 10, QLatin1Char('0')));
+        if (!QFileInfo::exists(uniteArgs.last())) {
+            if (error)
+                *error = QStringLiteral("Paperback PDF: missing separated page %1.").arg(i);
+            return false;
+        }
+    }
+    uniteArgs << outPdf;
+    QFile::remove(outPdf);
+    QProcess unite;
+    unite.start(QStringLiteral("pdfunite"), uniteArgs);
+    if (!unite.waitForFinished(180000) || unite.exitCode() != 0 || QFileInfo(outPdf).size() < 10000) {
+        if (error)
+            *error = QStringLiteral("Paperback PDF: pdfunite mirror merge failed.");
+        return false;
+    }
+    return true;
+}
+
+bool stampPaperbackPageNumbers(const QString &inPdf, const QString &outPdf,
+                               int frontMatterPages, QString *error)
+{
+    // WebEngine ignores CSS @page @bottom-center; stamp arabic numbers via Ghostscript.
+    // EndPage count is 0-based. Front matter pages stay unnumbered; body starts at 1.
+    if (frontMatterPages < 0)
+        frontMatterPages = 0;
+    QTemporaryDir stage;
+    if (!stage.isValid()) {
+        if (error)
+            *error = QStringLiteral("Paperback PDF: could not stage page-number stamp.");
+        return false;
+    }
+    const QString psPath = stage.filePath(QStringLiteral("stamp_pages.ps"));
+    const QString ps = QStringLiteral(
+        "/frontPages %1 def\n"
+        "<<\n"
+        "/EndPage {\n"
+        "  exch /pg exch def\n"
+        "  /reason exch def\n"
+        "  reason 2 eq {\n"
+        "    pop false\n"
+        "  } {\n"
+        "    pg frontPages lt {\n"
+        "      true\n"
+        "    } {\n"
+        "      gsave\n"
+        "        /Times-Roman findfont 9 scalefont setfont\n"
+        "        0 setgray\n"
+        "        /n pg frontPages sub 1 add def\n"
+        "        n 10 string cvs /s exch def\n"
+        "        s stringwidth pop 360 exch sub 2 div\n"
+        "        28 moveto\n"
+        "        s show\n"
+        "      grestore\n"
+        "      true\n"
+        "    } ifelse\n"
+        "  } ifelse\n"
+        "} bind\n"
+        ">> setpagedevice\n").arg(frontMatterPages);
+    if (!writeTextFilePath(psPath, ps)) {
+        if (error)
+            *error = QStringLiteral("Paperback PDF: could not write page-number stamp script.");
+        return false;
+    }
+    QFile::remove(outPdf);
+    QProcess gs;
+    gs.start(QStringLiteral("gs"), QStringList{
+        QStringLiteral("-dBATCH"),
+        QStringLiteral("-dNOPAUSE"),
+        QStringLiteral("-dQUIET"),
+        QStringLiteral("-sDEVICE=pdfwrite"),
+        QStringLiteral("-dCompatibilityLevel=1.4"),
+        QStringLiteral("-dPDFSETTINGS=/printer"),
+        QStringLiteral("-sOutputFile=") + outPdf,
+        psPath,
+        inPdf,
+    });
+    if (!gs.waitForFinished(300000) || gs.exitCode() != 0
+        || QFileInfo(outPdf).size() < 10000) {
+        if (error)
+            *error = QStringLiteral("Paperback PDF: Ghostscript page-number stamp failed.");
+        return false;
+    }
+    return true;
+}
+
+bool writePaperbackPdfFile(const QString &pdfPath, const QString &html, QString *error,
+                           double gutterIn = 0.875,
+                           const QString &frontHtml = QString())
+{
+    QTemporaryDir stage;
+    if (!stage.isValid()) {
+        if (error)
+            *error = QStringLiteral("Could not create temp dir for paperback PDF.");
+        return false;
+    }
+    QString fontErr;
+    if (!copyGelasioFontsToDir(stage.filePath(QStringLiteral("fonts/gelasio")), &fontErr)) {
+        if (error)
+            *error = fontErr.isEmpty()
+                         ? QStringLiteral("Could not stage Gelasio fonts for PDF.")
+                         : fontErr;
+        return false;
+    }
+    const QString htmlPath = stage.filePath(QStringLiteral("print.html"));
+    if (!writeTextFilePath(htmlPath, html)) {
+        if (error)
+            *error = QStringLiteral("Could not write paperback PDF HTML.");
+        return false;
+    }
+
+    QDir().mkpath(QFileInfo(pdfPath).absolutePath());
+    QFile::remove(pdfPath);
+
+    const double outsideIn = 0.5;
+    // Print-perfect: inside/gutter 0.875in (locked; no auto-bump).
+    const double gutter = gutterIn > 0.0 ? gutterIn : 0.875;
+
+    // Avoid AppImage FONTCONFIG Gelasio (all four faces) winning over @font-face.
+    qputenv("FONTCONFIG_FILE", QByteArray());
+    qunsetenv("FONTCONFIG_PATH");
+
+    auto loadHtml = [](QWebEnginePage *page, const QString &path, QString *err) -> bool {
+        QEventLoop loop;
+        bool loadOk = false;
+        QObject::connect(page, &QWebEnginePage::loadFinished, &loop,
+                         [&](bool ok) {
+            loadOk = ok;
+            loop.quit();
+        });
+        QTimer::singleShot(180000, &loop, &QEventLoop::quit);
+        page->load(QUrl::fromLocalFile(path));
+        loop.exec();
+        if (!loadOk) {
+            if (err)
+                *err = QStringLiteral("Paperback PDF: failed to load staged HTML.");
+            return false;
+        }
+        return true;
+    };
+
+    int frontPages = 0;
+    if (!frontHtml.trimmed().isEmpty()) {
+        const QString frontPath = stage.filePath(QStringLiteral("front.html"));
+        if (!writeTextFilePath(frontPath, frontHtml)) {
+            if (error)
+                *error = QStringLiteral("Could not write front-matter probe HTML.");
+            return false;
+        }
+        QWebEnginePage frontPage;
+        QString frontErr;
+        if (!loadHtml(&frontPage, frontPath, &frontErr)) {
+            if (error)
+                *error = frontErr;
+            return false;
+        }
+        const QString frontPdf = stage.filePath(QStringLiteral("front.pdf"));
+        if (!printWebEnginePdf(&frontPage, frontPdf,
+                               paperbackPdfPageLayout(gutter, outsideIn), error))
+            return false;
+        frontPages = pdfPageCountWithPdfinfo(frontPdf);
+        if (frontPages < 0)
+            frontPages = 0;
+    }
+
+    QWebEnginePage page;
+    QString loadErr;
+    if (!loadHtml(&page, htmlPath, &loadErr)) {
+        if (error)
+            *error = loadErr;
+        return false;
+    }
+
+    const QString rectoPath = stage.filePath(QStringLiteral("recto.pdf"));
+    const QString versoPath = stage.filePath(QStringLiteral("verso.pdf"));
+    const QString mergedPath = stage.filePath(QStringLiteral("merged.pdf"));
+
+    // Odd (recto): gutter left / outside right. Even (verso): outside left / gutter right.
+    QString printErr;
+    if (!printWebEnginePdf(&page, rectoPath, paperbackPdfPageLayout(gutter, outsideIn), &printErr)) {
+        if (error)
+            *error = printErr;
+        return false;
+    }
+    if (!printWebEnginePdf(&page, versoPath, paperbackPdfPageLayout(outsideIn, gutter), &printErr)) {
+        if (error)
+            *error = printErr;
+        return false;
+    }
+    if (!mergeMirroredPaperbackPdf(rectoPath, versoPath, mergedPath, error))
+        return false;
+
+    // pdfseparate/pdfunite duplicates font subsets per page — recompress with Ghostscript.
+    const QString compactPath = stage.filePath(QStringLiteral("compact.pdf"));
+    QProcess gs;
+    gs.start(QStringLiteral("gs"), QStringList{
+        QStringLiteral("-sDEVICE=pdfwrite"),
+        QStringLiteral("-dCompatibilityLevel=1.4"),
+        QStringLiteral("-dPDFSETTINGS=/printer"),
+        QStringLiteral("-dNOPAUSE"),
+        QStringLiteral("-dQUIET"),
+        QStringLiteral("-dBATCH"),
+        QStringLiteral("-sOutputFile=") + compactPath,
+        mergedPath,
+    });
+    const bool gsOk = gs.waitForFinished(300000) && gs.exitCode() == 0
+                      && QFileInfo(compactPath).size() > 10000;
+    const QString compactSrc = gsOk ? compactPath : mergedPath;
+
+    const QString numberedPath = stage.filePath(QStringLiteral("numbered.pdf"));
+    if (!stampPaperbackPageNumbers(compactSrc, numberedPath, frontPages, error))
+        return false;
+
+    QFile::remove(pdfPath);
+    if (!QFile::copy(numberedPath, pdfPath)) {
+        if (error)
+            *error = QStringLiteral("Paperback PDF: could not write final PDF.");
+        return false;
+    }
+    return true;
+}
+
 
 QString kindleCompileHtml(const QString &title, const QString &author,
                           const QVector<EpubWriter::Scene> &scenes)
@@ -722,15 +1390,22 @@ void QuireFrame::createActions()
     m_importScrivenerAction->setToolTip(QStringLiteral("Copy a Scrivener .scriv binder into a new .qr project"));
     connect(m_importScrivenerAction, &QAction::triggered, this, &QuireFrame::onImportScrivener);
 
-    m_compileAction = new QAction(QStringLiteral("Compile EPUB3 + Kindle DOCX"), this);
+    m_compileAction = new QAction(QStringLiteral("Compile EPUB3 + Kindle DOCX + PDF"), this);
     m_compileAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+E")));
     m_compileAction->setIcon(QIcon(QStringLiteral(":/icons/justify.png")));
-    m_compileAction->setToolTip(QStringLiteral("Compile EPUB3 + Kindle DOCX"));
+    m_compileAction->setToolTip(QStringLiteral("Compile EPUB3 + Kindle DOCX + manuscript.pdf (5×8 paperback interior)"));
     connect(m_compileAction, &QAction::triggered, this, &QuireFrame::onCompile);
 
     m_printAction = new QAction(QStringLiteral("&Print…"), this);
     m_printAction->setShortcut(QKeySequence::Print);
+    m_printAction->setToolTip(QStringLiteral(
+        "Print the book (whole manuscript), or the selected manuscript/Notes folder"));
     connect(m_printAction, &QAction::triggered, this, &QuireFrame::onPrint);
+
+    m_printCurrentSceneAction = new QAction(QStringLiteral("Print Current Scene…"), this);
+    m_printCurrentSceneAction->setToolTip(QStringLiteral(
+        "Print only the open scene from the editor (unsaved buffer OK)"));
+    connect(m_printCurrentSceneAction, &QAction::triggered, this, &QuireFrame::onPrintCurrentScene);
 
     m_boldAction = new QAction(QStringLiteral("Bold"), this);
     m_boldAction->setCheckable(true);
@@ -854,8 +1529,7 @@ void QuireFrame::createActions()
     m_pageBreakAction = new QAction(QStringLiteral("Insert Page &Break"), this);
     connect(m_pageBreakAction, &QAction::triggered, this, [this]() {
         if (m_editor)
-            m_editor->execCommand(QStringLiteral("insertHTML"),
-                QStringLiteral("<div class=\"page-break\" style=\"page-break-after: always; border: none; border-top: 1px dashed #8B7355; margin: 30px 0;\"></div>"));
+            m_editor->insertPageBreak();
     });
 
     m_renameAction = new QAction(QStringLiteral("Rename"), this);
@@ -962,6 +1636,7 @@ void QuireFrame::createMenus()
     fileMenu->addAction(m_compileAction);
     fileMenu->addSeparator();
     fileMenu->addAction(m_printAction);
+    fileMenu->addAction(m_printCurrentSceneAction);
     fileMenu->addSeparator();
     fileMenu->addAction(m_quitAction);
     for (QAction *a : fileMenu->actions())
@@ -1387,7 +2062,8 @@ void QuireFrame::onAbout()
             "New projects use a .qr suffix to mark Quire project folders; existing projects remain openable. "
             "Use binder operations to preserve order; files moved externally may append. "
             "Compile writes HTML, EPUB3 (manuscript.epub = KDP Kindle upload), "
-            "and a Word fallback (manuscript.docx).</p>"
+            "a Word fallback (manuscript.docx), and manuscript.pdf "
+            "(5×8 paperback interior — not File→Print).</p>"
             "<p>Sociopathletic · Noble Brown</p>").arg(kQuireVersion));
 }
 
@@ -1874,7 +2550,7 @@ void QuireFrame::onCompile()
             return;
     }
     statusBar()->showMessage(
-        QStringLiteral("Compiled manuscript.epub (EPUB3 = KDP Kindle upload) and manuscript.docx (Word fallback)"),
+        QStringLiteral("Compiled manuscript.epub (Kindle), manuscript.docx, and manuscript.pdf (5×8 paperback interior)"),
         8000);
     refreshManuscriptWordCount();
     updateStatus();
@@ -1918,30 +2594,8 @@ bool QuireFrame::compileToDisk(QString *error)
     }
 
     const QString fontOutDir = compileDir() + QStringLiteral("/fonts/gelasio");
-    QDir().mkpath(fontOutDir);
-    const QStringList gelasioFaces = {
-        QStringLiteral("Gelasio-Regular.ttf"),
-        QStringLiteral("Gelasio-Italic.ttf"),
-        QStringLiteral("Gelasio-Bold.ttf"),
-        QStringLiteral("Gelasio-BoldItalic.ttf"),
-        QStringLiteral("OFL.txt"),
-    };
-    for (const QString &name : gelasioFaces) {
-        const QString dest = fontOutDir + QLatin1Char('/') + name;
-        QFile out(dest);
-        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            if (error)
-                *error = QStringLiteral("Compile failed writing font %1.").arg(name);
-            return false;
-        }
-        QFile in(QStringLiteral(":/fonts/gelasio/") + name);
-        if (!in.open(QIODevice::ReadOnly)) {
-            if (error)
-                *error = QStringLiteral("Missing bundled font resource: %1").arg(name);
-            return false;
-        }
-        out.write(in.readAll());
-    }
+    if (!copyGelasioFontsToDir(fontOutDir, error))
+        return false;
 
     QString parts;
     parts += QStringLiteral(
@@ -2046,6 +2700,13 @@ bool QuireFrame::compileToDisk(QString *error)
     if (!DocumentIo::htmlToKindleDocx(docxOut, kindle, &docxError))
         fails.append(QStringLiteral("DOCX: %1").arg(docxError));
 
+    const QString pdfOut = compileDir() + QStringLiteral("/manuscript.pdf");
+    QString pdfError;
+    const QString pdfHtml = buildPaperbackPdfHtml(m_projectTitle, epubScenes);
+    const QString frontHtml = buildPaperbackPdfHtml(m_projectTitle, epubScenes, 0.875, true);
+    if (!writePaperbackPdfFile(pdfOut, pdfHtml, &pdfError, 0.875, frontHtml))
+        fails.append(QStringLiteral("PDF: %1").arg(pdfError));
+
     if (!fails.isEmpty()) {
         if (error)
             *error = fails.join(QStringLiteral("; "));
@@ -2057,7 +2718,7 @@ bool QuireFrame::compileToDisk(QString *error)
 int QuireFrame::runHeadlessCompile(const QString &projectDir)
 {
     if (!openProject(projectDir, false)) {
-        std::fprintf(stdout, "compiled: epub=fail xhtml=fail heading1:0\n");
+        std::fprintf(stdout, "compiled: epub=fail xhtml=fail pdf=fail heading1:0\n");
         std::fflush(stdout);
         return 1;
     }
@@ -2066,7 +2727,9 @@ int QuireFrame::runHeadlessCompile(const QString &projectDir)
     const bool compiled = compileToDisk(&err);
     const QString epub = compileDir() + QStringLiteral("/manuscript.epub");
     const QString docx = compileDir() + QStringLiteral("/manuscript.docx");
+    const QString pdf = compileDir() + QStringLiteral("/manuscript.pdf");
     const bool epubOk = QFileInfo::exists(epub);
+    const bool pdfOk = QFileInfo::exists(pdf) && QFileInfo(pdf).size() > 10000;
     bool xhtmlOk = false;
     int h1 = 0;
 
@@ -2118,9 +2781,10 @@ int QuireFrame::runHeadlessCompile(const QString &projectDir)
     if (!compiled && err.isEmpty())
         std::fprintf(stdout, "compile-error: compileToDisk failed\n");
 
-    std::fprintf(stdout, "compiled: epub=%s xhtml=%s heading1:%d\n",
+    std::fprintf(stdout, "compiled: epub=%s xhtml=%s pdf=%s heading1:%d\n",
                  epubOk ? "ok" : "fail",
                  xhtmlOk ? "ok" : "fail",
+                 pdfOk ? "ok" : "fail",
                  h1);
 
     bool gelasioEmbed = false;
@@ -2139,7 +2803,133 @@ int QuireFrame::runHeadlessCompile(const QString &projectDir)
     }
     std::fprintf(stdout, "font-embed: gelasio=%s\n", gelasioEmbed ? "ok" : "fail");
     std::fflush(stdout);
-    return (compiled && epubOk && xhtmlOk && gelasioEmbed) ? 0 : 1;
+    return (compiled && epubOk && gelasioEmbed && pdfOk) ? 0 : 1;
+}
+
+int QuireFrame::runPrintProof(const QString &projectDir)
+{
+    if (!openProject(projectDir, false)) {
+        std::fprintf(stdout, "print-scope: manuscript=0  default=0  scene=0  h1=0  health: fail\n");
+        std::fflush(stdout);
+        return 1;
+    }
+
+    // Manuscript root selected → whole book.
+    if (m_treeView) {
+        const QModelIndex msIdx = viewIndexForPath(manuscriptDir());
+        if (msIdx.isValid())
+            m_treeView->setCurrentIndex(msIdx);
+    }
+
+    QString msLabel;
+    const QStringList manuscriptScope = resolvePrintScope(&msLabel);
+    const int msCount = manuscriptScope.size();
+
+    // Scene selected (default Print path) must also resolve to the whole manuscript.
+    QString defaultLabel;
+    int defaultCount = 0;
+    if (!manuscriptScope.isEmpty()) {
+        if (m_treeView) {
+            const QModelIndex oneIdx = viewIndexForPath(manuscriptScope.first());
+            if (oneIdx.isValid())
+                m_treeView->setCurrentIndex(oneIdx);
+        }
+        const QStringList defScope = resolvePrintScope(&defaultLabel);
+        defaultCount = defScope.size();
+    }
+
+    // Print Current Scene is always a single open scene (editor path).
+    const int sceneCount = manuscriptScope.isEmpty() ? 0 : 1;
+
+    const QString html = buildPrintHtml(manuscriptScope);
+    const QString outPath = QDir::temp().filePath(
+        QStringLiteral("quire-print-proof-%1.html").arg(QCoreApplication::applicationPid()));
+    writeTextFile(outPath, html);
+
+    const int h1 = html.count(QStringLiteral("<h1"));
+    const int sceneBreaks = html.count(QStringLiteral("class=\"print-scene\""));
+    const qint64 htmlBytes = QFileInfo(outPath).size();
+    const bool hasRelFont = html.contains(QStringLiteral("fonts/gelasio/Gelasio-Regular.ttf"));
+    const bool hasDataFont = html.contains(QStringLiteral("data:font"));
+    const bool htmlLean = (htmlBytes > 0) && (htmlBytes < 2000000) && hasRelFont && !hasDataFont;
+    const bool scopeOk = (msCount >= 30) && (defaultCount >= 30) && (defaultCount == msCount)
+                         && (sceneCount == 1) && (h1 >= 30) && (sceneBreaks >= 30);
+
+    std::fprintf(stdout,
+                 "print-scope: manuscript=%d  default=%d  scene=%d  h1=%d  breaks=%d  html=%s  bytes=%lld  health: %s\n",
+                 msCount, defaultCount, sceneCount, h1, sceneBreaks, qPrintable(outPath),
+                 static_cast<long long>(htmlBytes),
+                 (scopeOk && htmlLean) ? "ok" : "fail");
+    std::fprintf(stdout, "print-label: %s | %s\n", qPrintable(msLabel), qPrintable(defaultLabel));
+    std::fprintf(stdout,
+                 "print-html: rel-font=%s  data-font=%s  lean=%s\n",
+                 hasRelFont ? "ok" : "fail",
+                 hasDataFont ? "bad" : "ok",
+                 htmlLean ? "ok" : "fail");
+    std::fflush(stdout);
+
+    // Prove WebEngine can load the staged print HTML and emit a PDF (the failure Noble hit).
+    bool pdfOk = false;
+    qint64 pdfBytes = 0;
+    QString pdfPath = QDir::temp().filePath(
+        QStringLiteral("quire-print-proof-%1.pdf").arg(QCoreApplication::applicationPid()));
+    QFile::remove(pdfPath);
+    if (scopeOk && htmlLean && !manuscriptScope.isEmpty()) {
+        QTemporaryDir stage;
+        QString stageErr;
+        const QString stagedHtml = stage.isValid()
+                                       ? stage.filePath(QStringLiteral("print.html"))
+                                       : QString();
+        const bool staged = stage.isValid()
+                            && copyGelasioFontsToDir(stage.filePath(QStringLiteral("fonts/gelasio")),
+                                                     &stageErr)
+                            && writeTextFile(stagedHtml, html);
+        if (!staged) {
+            std::fprintf(stdout, "print-pdf: stage-fail %s\n",
+                         qPrintable(stageErr.isEmpty() ? QStringLiteral("temp") : stageErr));
+        } else {
+            QWebEnginePage page;
+            QEventLoop loop;
+            bool loadOk = false;
+            bool pdfDone = false;
+            bool pdfSuccess = false;
+            QObject::connect(&page, &QWebEnginePage::loadFinished, &loop,
+                             [&](bool ok) {
+                loadOk = ok;
+                if (!ok) {
+                    loop.quit();
+                    return;
+                }
+                page.printToPdf(pdfPath, defaultPrintPageLayout());
+            });
+            QObject::connect(&page, &QWebEnginePage::pdfPrintingFinished, &loop,
+                             [&](const QString &path, bool success) {
+                Q_UNUSED(path);
+                pdfDone = true;
+                pdfSuccess = success;
+                loop.quit();
+            });
+            QTimer::singleShot(120000, &loop, &QEventLoop::quit);
+            page.load(QUrl::fromLocalFile(stagedHtml));
+            loop.exec();
+            pdfBytes = QFileInfo(pdfPath).size();
+            pdfOk = loadOk && pdfDone && pdfSuccess && pdfBytes > 100000;
+            std::fprintf(stdout,
+                         "print-pdf: load=%s  done=%s  success=%s  bytes=%lld  path=%s  health: %s\n",
+                         loadOk ? "ok" : "fail",
+                         pdfDone ? "ok" : "fail",
+                         pdfSuccess ? "ok" : "fail",
+                         static_cast<long long>(pdfBytes),
+                         qPrintable(pdfPath),
+                         pdfOk ? "ok" : "fail");
+        }
+    } else {
+        std::fprintf(stdout, "print-pdf: skipped\n");
+    }
+    std::fflush(stdout);
+
+    const bool ok = scopeOk && htmlLean && pdfOk;
+    return ok ? 0 : 1;
 }
 
 void QuireFrame::runListenProof()
@@ -2377,6 +3167,34 @@ void QuireFrame::runListenProof()
     recentSettings.setValue(QStringLiteral("recentProjects"), savedRecent);
     std::fprintf(stdout, "recent: %d\n", int(recents.size()));
     std::fflush(stdout);
+
+    {
+        if (m_treeView) {
+            const QModelIndex msIdx = viewIndexForPath(manuscriptDir());
+            if (msIdx.isValid())
+                m_treeView->setCurrentIndex(msIdx);
+        }
+        QString msLabel;
+        const QStringList msScope = resolvePrintScope(&msLabel);
+        QString defaultLabel;
+        int defaultCount = 0;
+        if (!msScope.isEmpty() && m_treeView) {
+            const QModelIndex oneIdx = viewIndexForPath(msScope.first());
+            if (oneIdx.isValid())
+                m_treeView->setCurrentIndex(oneIdx);
+            defaultCount = resolvePrintScope(&defaultLabel).size();
+        }
+        const int sceneCount = msScope.isEmpty() ? 0 : 1;
+        const QString html = buildPrintHtml(msScope);
+        const int h1 = html.count(QStringLiteral("<h1"));
+        const int sceneBreaks = html.count(QStringLiteral("class=\"print-scene\""));
+        std::fprintf(stdout,
+                     "print-scope: manuscript=%d  default=%d  scene=%d  h1=%d  breaks=%d  health: %s\n",
+                     int(msScope.size()), defaultCount, sceneCount, h1, sceneBreaks,
+                     (msScope.size() >= 4 && defaultCount == int(msScope.size())
+                      && sceneCount == 1 && h1 >= 2) ? "ok" : "fail");
+        std::fflush(stdout);
+    }
 
     QTimer::singleShot(400, qApp, []() { QCoreApplication::quit(); });
 }
@@ -2929,7 +3747,330 @@ void QuireFrame::onSelectionFontChanged(const QString &family, int pt)
     showSizeInCombo(m_sizeCombo, pt);
 }
 
+void QuireFrame::collectNotesHtml(const QString &dir, QStringList *out) const
+{
+    if (!out || dir.isEmpty())
+        return;
+    QFileInfoList entries = QDir(dir).entryInfoList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
+    std::sort(entries.begin(), entries.end(), [](const QFileInfo &a, const QFileInfo &b) {
+        if (a.isDir() != b.isDir())
+            return a.isDir();
+        QCollator col;
+        col.setNumericMode(true);
+        col.setCaseSensitivity(Qt::CaseInsensitive);
+        return col.compare(a.fileName(), b.fileName()) < 0;
+    });
+    for (const QFileInfo &e : entries) {
+        if (e.isDir())
+            collectNotesHtml(e.absoluteFilePath(), out);
+        else if (e.suffix().compare(QLatin1String("html"), Qt::CaseInsensitive) == 0)
+            out->append(e.absoluteFilePath());
+    }
+}
+
+QStringList QuireFrame::resolvePrintScope(QString *labelOut) const
+{
+    QStringList paths;
+    QString sel;
+    if (m_treeView) {
+        const QModelIndex idx = m_treeView->currentIndex();
+        if (idx.isValid())
+            sel = pathFromView(idx);
+    }
+
+    auto finish = [&](const QString &label) -> QStringList {
+        if (labelOut)
+            *labelOut = label;
+        return paths;
+    };
+
+    auto wholeManuscript = [&]() -> QStringList {
+        paths.clear();
+        if (!m_projectDir.isEmpty())
+            collectScenes(manuscriptDir(), &paths);
+        if (paths.isEmpty())
+            return finish(QStringLiteral("(empty)"));
+        return finish(QStringLiteral("manuscript (%1 scenes)").arg(paths.size()));
+    };
+
+    if (!sel.isEmpty() && !m_projectDir.isEmpty()) {
+        const QFileInfo fi(sel);
+        if (pathEquals(sel, manuscriptDir())) {
+            collectScenes(manuscriptDir(), &paths);
+            return finish(QStringLiteral("manuscript (%1 scenes)").arg(paths.size()));
+        }
+        if (fi.isDir() && isManuscriptPath(sel)) {
+            collectScenes(sel, &paths);
+            return finish(QStringLiteral("%1 (%2 scenes)").arg(fi.fileName()).arg(paths.size()));
+        }
+        if (pathEquals(sel, notesDir()) || (fi.isDir() && isNotesPath(sel))) {
+            collectNotesHtml(sel, &paths);
+            const QString name = pathEquals(sel, notesDir())
+                                     ? QStringLiteral("notes")
+                                     : fi.fileName();
+            return finish(QStringLiteral("%1 (%2 notes)").arg(name).arg(paths.size()));
+        }
+        // Single scene (or other leaf): File→Print prints the book, not the leaf.
+        if (fi.isFile()
+            && fi.suffix().compare(QLatin1String("html"), Qt::CaseInsensitive) == 0
+            && (isManuscriptPath(sel) || isNotesPath(sel))) {
+            return wholeManuscript();
+        }
+    }
+
+    // Nothing useful selected → whole manuscript (not the open editor scene).
+    return wholeManuscript();
+}
+
+QString QuireFrame::buildPrintHtml(const QStringList &scenePaths) const
+{
+    QVector<EpubWriter::Scene> epubScenes;
+    epubScenes.reserve(scenePaths.size());
+    QString lastChapter;
+    const QString msRoot = manuscriptDir();
+    for (const QString &path : scenePaths) {
+        EpubWriter::Scene sc;
+        sc.title = sceneTitleFromPath(path);
+        const QString raw = readTextFile(path);
+        const QString healed = EpubWriter::healBody(raw);
+        sc.bodyHtml = sceneBody(healed);
+        if (isManuscriptPath(path)) {
+            QString rel = QDir(msRoot).relativeFilePath(QFileInfo(path).absolutePath());
+            if (!rel.isEmpty() && rel != QLatin1String("."))
+                sc.folderTrail = rel.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+            annotateCompileScene(&sc, &lastChapter);
+        } else {
+            // Notes: treat each file as its own titled block without chapter machinery.
+            sc.frontMatter = true;
+        }
+        epubScenes.append(sc);
+    }
+
+    QString parts;
+    parts += QStringLiteral(
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        "<meta charset=\"utf-8\">\n"
+        "<title>%1</title>\n"
+        "<style>\n"
+        "%2"
+        "html, body {\n"
+        "  font-family: Gelasio, Georgia, \"Times New Roman\", serif;\n"
+        "  font-size: 12pt;\n"
+        "  line-height: 1.35;\n"
+        "  margin: 0;\n"
+        "  padding: 0;\n"
+        "  color: #000;\n"
+        "  background: #fff;\n"
+        "}\n"
+        "body { margin: 0.6in; }\n"
+        "h1, h1.chapter { font-size: 1.6em; font-weight: bold; text-align: center; margin: 1.6em 0 1em 0; }\n"
+        "h2 { font-size: 1.2em; font-weight: bold; margin: 1.2em 0 0.7em 0; }\n"
+        "p { margin: 0 0 0.8em 0; text-indent: 1.2em; }\n"
+        "p:first-of-type { text-indent: 0; }\n"
+        "p.scene-break, p[style*=\"text-align:center\"] { text-align: center; text-indent: 0; }\n"
+        ".print-scene { page-break-before: always; break-before: page; }\n"
+        ".print-scene:first-child { page-break-before: auto; break-before: auto; }\n"
+        ".page-break, .pagebreak {\n"
+        "  break-after: page;\n"
+        "  page-break-after: always;\n"
+        "  border: none;\n"
+        "  margin: 0;\n"
+        "  height: 0;\n"
+        "}\n"
+        "@media print {\n"
+        "  html, body { color: #000 !important; background: #fff !important; }\n"
+        "}\n"
+        "</style>\n"
+        "</head>\n"
+        "<body>\n")
+        .arg(m_projectTitle.toHtmlEscaped(), gelasioPrintFontFaceCss());
+
+    for (int i = 0; i < scenePaths.size(); ++i) {
+        const EpubWriter::Scene &sc = epubScenes.at(i);
+        QString inner = EpubWriter::headingHtml(sc);
+        if (sc.frontMatter && !isManuscriptPath(scenePaths.at(i)) && !sc.title.isEmpty())
+            inner = QStringLiteral("<h1 class=\"chapter\">%1</h1>\n").arg(sc.title.toHtmlEscaped());
+        const QString body = EpubWriter::sanitizeBody(sc.bodyHtml);
+        if (!inner.isEmpty() && !body.isEmpty())
+            inner += QLatin1Char('\n');
+        inner += body;
+        const QString cls = (i == 0)
+                                ? QStringLiteral("print-scene first")
+                                : QStringLiteral("print-scene");
+        parts += QStringLiteral("<section class=\"%1\" data-scene=\"%2\">\n%3\n</section>\n")
+                     .arg(cls,
+                          QFileInfo(scenePaths.at(i)).fileName().toHtmlEscaped(),
+                          inner);
+    }
+    parts += QStringLiteral("</body></html>\n");
+    return parts;
+}
+
+void QuireFrame::beginScopedPrint(const QString &html, const QPageLayout &layout,
+                                  const QString &outputPdf, bool cupsJob)
+{
+    if (m_printPage) {
+        m_printPage->deleteLater();
+        m_printPage = nullptr;
+    }
+    if (m_printHtmlDir) {
+        delete m_printHtmlDir;
+        m_printHtmlDir = nullptr;
+    }
+
+    auto *dir = new QTemporaryDir();
+    if (!dir->isValid()) {
+        delete dir;
+        statusBar()->showMessage(QStringLiteral("Print failed: temp dir"));
+        QMessageBox::warning(this, QStringLiteral("Print Failed"),
+                             QStringLiteral("Could not create a temporary print directory."));
+        m_pendingLpPdf.clear();
+        m_pendingLpPrinter.clear();
+        m_pendingLpCopies = 1;
+        return;
+    }
+    m_printHtmlDir = dir;
+
+    const QString htmlPath = dir->filePath(QStringLiteral("print.html"));
+    QString fontErr;
+    if (!copyGelasioFontsToDir(dir->filePath(QStringLiteral("fonts/gelasio")), &fontErr)) {
+        delete m_printHtmlDir;
+        m_printHtmlDir = nullptr;
+        statusBar()->showMessage(QStringLiteral("Print failed: fonts"));
+        QMessageBox::warning(this, QStringLiteral("Print Failed"),
+                             fontErr.isEmpty()
+                                 ? QStringLiteral("Could not stage Gelasio fonts for printing.")
+                                 : fontErr);
+        m_pendingLpPdf.clear();
+        m_pendingLpPrinter.clear();
+        m_pendingLpCopies = 1;
+        return;
+    }
+    if (!writeTextFile(htmlPath, html)) {
+        delete m_printHtmlDir;
+        m_printHtmlDir = nullptr;
+        statusBar()->showMessage(QStringLiteral("Print failed: write HTML"));
+        QMessageBox::warning(this, QStringLiteral("Print Failed"),
+                             QStringLiteral("Could not write the print HTML:\n%1").arg(htmlPath));
+        m_pendingLpPdf.clear();
+        m_pendingLpPrinter.clear();
+        m_pendingLpCopies = 1;
+        return;
+    }
+
+    auto *page = new QWebEnginePage(this);
+    m_printPage = page;
+    connect(page, &QWebEnginePage::pdfPrintingFinished,
+            this, &QuireFrame::onPdfPrintingFinished);
+
+    Q_UNUSED(cupsJob);
+    const qint64 htmlBytes = QFileInfo(htmlPath).size();
+    QMetaObject::Connection *conn = new QMetaObject::Connection;
+    *conn = QObject::connect(page, &QWebEnginePage::loadFinished, this,
+                             [this, page, layout, outputPdf, conn, htmlPath, htmlBytes](bool ok) {
+        if (conn) {
+            QObject::disconnect(*conn);
+            delete conn;
+        }
+        if (page != m_printPage)
+            return;
+        if (!ok) {
+            statusBar()->showMessage(QStringLiteral("Print failed: could not load document"));
+            QMessageBox::warning(
+                this, QStringLiteral("Print Failed"),
+                QStringLiteral("Could not load the print document.\n%1\nsize=%2 bytes")
+                    .arg(htmlPath)
+                    .arg(htmlBytes));
+            if (m_printPage == page) {
+                m_printPage = nullptr;
+                page->deleteLater();
+            }
+            if (m_printHtmlDir) {
+                delete m_printHtmlDir;
+                m_printHtmlDir = nullptr;
+            }
+            m_pendingLpPdf.clear();
+            m_pendingLpPrinter.clear();
+            m_pendingLpCopies = 1;
+            return;
+        }
+        page->printToPdf(outputPdf, layout);
+    });
+
+    page->load(QUrl::fromLocalFile(htmlPath));
+}
+
 void QuireFrame::onPrint()
+{
+    if (!m_editor || !m_editor->webView() || !m_editor->webView()->page())
+        return;
+
+    QPrinter printer(QPrinter::HighResolution);
+    const QString defName = QPrinterInfo::defaultPrinterName();
+    if (!defName.isEmpty())
+        printer.setPrinterName(defName);
+    printer.setPageLayout(defaultPrintPageLayout());
+
+    QPrintDialog dialog(&printer, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    if (m_editor && m_editor->isDirty())
+        persistCurrentScene(true);
+
+    QString scopeLabel;
+    const QStringList scope = resolvePrintScope(&scopeLabel);
+    if (scope.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Print"),
+                                 QStringLiteral("Nothing to print. Open a project with manuscript scenes."));
+        return;
+    }
+
+    const QPageLayout layout = pageLayoutFromPrinter(printer);
+    const bool toFile = printer.outputFormat() == QPrinter::PdfFormat
+                        || !printer.outputFileName().isEmpty();
+
+    auto statusPrinting = [&]() {
+        statusBar()->showMessage(QStringLiteral("Printing %1…").arg(scopeLabel));
+    };
+
+    const QString html = buildPrintHtml(scope);
+    if (toFile) {
+        QString fileName = printer.outputFileName();
+        if (fileName.isEmpty())
+            return;
+        if (!fileName.endsWith(QLatin1String(".pdf"), Qt::CaseInsensitive))
+            fileName += QStringLiteral(".pdf");
+        beginScopedPrint(html, layout, fileName, false);
+        statusPrinting();
+        return;
+    }
+
+    if (m_printTemp) {
+        m_printTemp->deleteLater();
+        m_printTemp = nullptr;
+    }
+    auto *tmp = new QTemporaryFile(QDir::tempPath() + QStringLiteral("/quire-print-XXXXXX.pdf"), this);
+    tmp->setAutoRemove(true);
+    if (!tmp->open()) {
+        delete tmp;
+        QMessageBox::warning(this, QStringLiteral("Print Failed"),
+                             QStringLiteral("Could not create a temporary PDF."));
+        return;
+    }
+    const QString tmpPath = tmp->fileName();
+    tmp->close();
+    m_printTemp = tmp;
+    m_pendingLpPdf = tmpPath;
+    m_pendingLpPrinter = printer.printerName();
+    m_pendingLpCopies = qMax(1, printer.copyCount());
+    beginScopedPrint(html, layout, tmpPath, true);
+    statusPrinting();
+}
+
+void QuireFrame::onPrintCurrentScene()
 {
     if (!m_editor || !m_editor->webView() || !m_editor->webView()->page())
         return;
@@ -2947,6 +4088,15 @@ void QuireFrame::onPrint()
     const QPageLayout layout = pageLayoutFromPrinter(printer);
     const bool toFile = printer.outputFormat() == QPrinter::PdfFormat
                         || !printer.outputFileName().isEmpty();
+
+    const QString scopeLabel = m_currentScenePath.isEmpty()
+                                   ? QStringLiteral("current scene")
+                                   : QStringLiteral("scene: %1").arg(sceneTitleFromPath(m_currentScenePath));
+    auto statusPrinting = [&]() {
+        statusBar()->showMessage(QStringLiteral("Printing %1…").arg(scopeLabel));
+    };
+
+    // Editor page (unsaved buffer OK) — do not persist first.
     if (toFile) {
         QString fileName = printer.outputFileName();
         if (fileName.isEmpty())
@@ -2954,7 +4104,8 @@ void QuireFrame::onPrint()
         if (!fileName.endsWith(QLatin1String(".pdf"), Qt::CaseInsensitive))
             fileName += QStringLiteral(".pdf");
         m_editor->webView()->page()->printToPdf(fileName, layout);
-        statusBar()->showMessage(QStringLiteral("Printing to file: ") + fileName);
+        statusPrinting();
+        statusBar()->showMessage(QStringLiteral("Printing %1 to file…").arg(scopeLabel));
         return;
     }
 
@@ -2977,11 +4128,23 @@ void QuireFrame::onPrint()
     m_pendingLpPrinter = printer.printerName();
     m_pendingLpCopies = qMax(1, printer.copyCount());
     m_editor->webView()->page()->printToPdf(tmpPath, layout);
-    statusBar()->showMessage(QStringLiteral("Printing..."));
+    statusPrinting();
 }
 
 void QuireFrame::onPdfPrintingFinished(const QString &path, bool success)
 {
+    QWebEnginePage *finishing = qobject_cast<QWebEnginePage *>(sender());
+    auto releasePrintPage = [&]() {
+        if (finishing && finishing == m_printPage) {
+            m_printPage = nullptr;
+            finishing->deleteLater();
+        }
+        if (m_printHtmlDir) {
+            delete m_printHtmlDir;
+            m_printHtmlDir = nullptr;
+        }
+    };
+
     const bool cupsJob = !m_pendingLpPdf.isEmpty() && path == m_pendingLpPdf;
     if (cupsJob) {
         const QString pdf = m_pendingLpPdf;
@@ -3000,6 +4163,7 @@ void QuireFrame::onPdfPrintingFinished(const QString &path, bool success)
 
         if (!success) {
             cleanupTemp();
+            releasePrintPage();
             QMessageBox::warning(this, QStringLiteral("Print Failed"),
                                  QStringLiteral("Could not render the page for printing."));
             return;
@@ -3008,12 +4172,20 @@ void QuireFrame::onPdfPrintingFinished(const QString &path, bool success)
         const QStringList args = cupsLpArgv(printerName, copies, pdf);
         QProcess *lp = new QProcess(this);
         connect(lp, &QProcess::finished, this,
-                [this, lp](int code, QProcess::ExitStatus st) {
+                [this, lp, finishing](int code, QProcess::ExitStatus st) {
             const QByteArray err = lp->readAllStandardError();
             lp->deleteLater();
             if (m_printTemp) {
                 m_printTemp->deleteLater();
                 m_printTemp = nullptr;
+            }
+            if (finishing && finishing == m_printPage) {
+                m_printPage = nullptr;
+                finishing->deleteLater();
+            }
+            if (m_printHtmlDir) {
+                delete m_printHtmlDir;
+                m_printHtmlDir = nullptr;
             }
             if (code != 0 || st != QProcess::NormalExit) {
                 const QString msg = err.isEmpty()
@@ -3030,6 +4202,7 @@ void QuireFrame::onPdfPrintingFinished(const QString &path, bool success)
                                  QStringLiteral("Could not start lp."));
             lp->deleteLater();
             cleanupTemp();
+            releasePrintPage();
         }
         return;
     }
@@ -3039,6 +4212,7 @@ void QuireFrame::onPdfPrintingFinished(const QString &path, bool success)
                              QStringLiteral("Could not write the print file:\n") + path);
     else
         statusBar()->showMessage(QStringLiteral("Printed to: ") + path);
+    releasePrintPage();
 }
 
 void QuireFrame::onFontChanged(const QString &font)

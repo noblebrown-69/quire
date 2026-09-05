@@ -20,9 +20,10 @@ Quire is the Linux-native version of that binder: small, portable, yours. The pr
 
 **Notes.** Research, characters, scraps. Same editor. They never join compile order, never become Kindle TOC entries, and manuscript Find does not search them.
 
-**Compile.** One action writes three files:
+**Compile.** One action writes four files:
 - `manuscript.epub` — EPUB3, the file you upload to KDP for Kindle (Gelasio faces embedded)
 - `manuscript.docx` — Kindle Create / Word-converter fallback (Heading 1 on chapter titles only; scenes stay body; Times New Roman; scene break is a centered `#`)
+- `manuscript.pdf` — paperback interior at 5×8 trim (Gelasio; not File→Print)
 - `manuscript.html` — a readable dump of the same order, with Gelasio beside it
 
 **Find.** Ctrl+F walks every manuscript scene in binder order. Uncheck Manuscript to search only the open page.
@@ -46,7 +47,7 @@ Snowflake.qr/
   quire.json      title, author, compile order, exclude list
   manuscript/     Front Matter, chapters, scenes as .html
   notes/          research .html — in the binder, never compiled
-  compile/        manuscript.html, manuscript.epub, manuscript.docx
+  compile/        manuscript.html, manuscript.epub, manuscript.docx, manuscript.pdf
   .autosave/      dirty-scene backups only
 ```
 
@@ -66,7 +67,7 @@ The `.docx` is a fallback for Kindle Create and Amazon’s Word converter. It is
 - First-line indent, no headers/footers/page numbers/cover
 - Scene break is a centered `#`
 
-Paperback wants a PDF at trim size. That is a later compile, not this file.
+`manuscript.pdf` from Compile is the paperback interior at **5×8** (QuireRoman, mirrored gutter 0.875in, page numbers after front matter). File→Print stays CUPS/Brother draft printing — do not use Print-to-PDF as the book.
 
 ## Run
 
@@ -86,6 +87,6 @@ If CMake cannot find WebEngineWidgets: `sudo apt install qt6-webengine-dev`.
 
 ## Status
 
-0.3.19. Usable for a real draft. Binder, compile, and the page have been proven on a running binary; weekend is for living in it.
+0.3.28. Compile also writes `manuscript.pdf` (5×8 paperback interior). File→Print stays CUPS/Brother; Print Current Scene… is the one-page editor print. Usable for a real draft.
 
 Not a corkboard. Not a port of someone else’s app. Linux first.

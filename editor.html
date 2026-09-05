@@ -97,6 +97,14 @@
     border: none;
     border-top: 1px dashed #8B7355;
     margin: 30px 0;
+    min-height: 8px;
+    padding: 4px 0;
+  }
+  .page-break[contenteditable="false"] {
+    min-height: 8px;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
   }
   ::selection {
     background: var(--selection-bg);
@@ -169,13 +177,115 @@ function syncTaskState(box) {
   }
 }
 
+function normalizePageBreaks(ed) {
+  if (!ed) ed = document.getElementById('editor');
+  if (!ed) return;
+  const candidates = Array.from(ed.querySelectorAll('.page-break, [style*="page-break-after"]'));
+  candidates.forEach(function(el) {
+    if (!el.classList.contains('page-break'))
+      el.classList.add('page-break');
+    el.setAttribute('contenteditable', 'false');
+    while (el.firstChild)
+      el.removeChild(el.firstChild);
+    el.removeAttribute('style');
+  });
+  // Collapse consecutive .page-break siblings (ignore whitespace text nodes between)
+  const all = Array.from(ed.querySelectorAll('.page-break'));
+  for (let i = all.length - 1; i > 0; --i) {
+    const cur = all[i];
+    const prev = all[i - 1];
+    if (prev.parentNode !== cur.parentNode) continue;
+    let onlyWs = true;
+    let n = prev.nextSibling;
+    while (n && n !== cur) {
+      if (n.nodeType === 3 && !(n.textContent || '').trim()) {
+        n = n.nextSibling;
+        continue;
+      }
+      onlyWs = false;
+      break;
+    }
+    if (!onlyWs) continue;
+    n = prev.nextSibling;
+    while (n && n !== cur) {
+      const next = n.nextSibling;
+      n.parentNode.removeChild(n);
+      n = next;
+    }
+    cur.parentNode.removeChild(cur);
+  }
+  // Unwrap parent that only holds page-break(s) (e.g. centered wrapper left by Enter cloning)
+  Array.from(ed.querySelectorAll('.page-break')).forEach(function(el) {
+    const parent = el.parentNode;
+    if (!parent || parent === ed || parent.id === 'editor') return;
+    if (!(parent.tagName === 'DIV' || parent.tagName === 'P')) return;
+    const kids = Array.from(parent.childNodes);
+    const onlyBreaks = kids.every(function(n) {
+      if (n.nodeType === 3) return !(n.textContent || '').trim();
+      if (n.nodeType === 1 && n.classList && n.classList.contains('page-break')) return true;
+      return false;
+    });
+    if (!onlyBreaks) return;
+    while (parent.firstChild)
+      parent.parentNode.insertBefore(parent.firstChild, parent);
+    parent.parentNode.removeChild(parent);
+  });
+}
+
+function insertPageBreak() {
+  const ed = document.getElementById('editor');
+  if (!ed) return;
+  ed.focus();
+  // Prefer DOM Range so caret lands in the empty block after a non-editable break.
+  const sel = window.getSelection();
+  let range = null;
+  if (sel && sel.rangeCount)
+    range = sel.getRangeAt(0).cloneRange();
+  if (!range) {
+    range = document.createRange();
+    range.selectNodeContents(ed);
+    range.collapse(false);
+  }
+  let container = range.startContainer;
+  if (container.nodeType === 3) container = container.parentNode;
+  const inside = container && container.closest ? container.closest('.page-break') : null;
+  if (inside) {
+    range = document.createRange();
+    range.setStartAfter(inside);
+    range.collapse(true);
+  } else {
+    try { range.deleteContents(); } catch (e) {}
+  }
+
+  const brk = document.createElement('div');
+  brk.className = 'page-break';
+  brk.setAttribute('contenteditable', 'false');
+  const after = document.createElement('div');
+  after.appendChild(document.createElement('br'));
+  const frag = document.createDocumentFragment();
+  frag.appendChild(brk);
+  frag.appendChild(after);
+  range.insertNode(frag);
+
+  if (sel) {
+    const caret = document.createRange();
+    caret.setStart(after, 0);
+    caret.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+  }
+  if (!window._loading) window.monasteryDirty = true;
+}
+
 function setContent(html) {
   window._loading = true;
-  document.getElementById('editor').innerHTML = html || '<p></p>';
+  const ed = document.getElementById('editor');
+  ed.innerHTML = html || '<p></p>';
   document.querySelectorAll('#editor li.task input[type=checkbox]').forEach(function(box) {
     box.checked = box.checked || box.hasAttribute('checked');
     syncTaskState(box);
   });
+  normalizePageBreaks(ed);
   window.monasteryDirty = false;
   window._loading = false;
 }
@@ -528,6 +638,31 @@ function sanitizePasted(root) {
   const mark = function() { if (!window._loading) window.monasteryDirty = true; };
   ed.addEventListener('input', mark);
   ed.addEventListener('keyup', mark);
+  ed.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    let node = sel.getRangeAt(0).startContainer;
+    if (node.nodeType === 3) node = node.parentNode;
+    const pb = node && node.closest ? node.closest('.page-break') : null;
+    if (!pb) return;
+    e.preventDefault();
+    let after = pb.nextElementSibling;
+    if (!after || after.classList.contains('page-break')) {
+      after = document.createElement('div');
+      after.appendChild(document.createElement('br'));
+      if (pb.nextSibling)
+        pb.parentNode.insertBefore(after, pb.nextSibling);
+      else
+        pb.parentNode.appendChild(after);
+    }
+    const r = document.createRange();
+    r.setStart(after, 0);
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    if (!window._loading) window.monasteryDirty = true;
+  });
   ed.addEventListener('click', function(e) {
     if (!e.target || !e.target.matches || !e.target.matches('input[type=checkbox]'))
       return;
