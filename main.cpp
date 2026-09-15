@@ -180,6 +180,39 @@ static void setupWebEnginePrefix()
     qputenv("LD_LIBRARY_PATH", old.isEmpty() ? extraLib : extraLib + ":" + old);
 }
 
+
+static void ensureSpellcheckDictionariesPath(int argc, char *argv[])
+{
+    if (!qEnvironmentVariableIsEmpty("QTWEBENGINE_DICTIONARIES_PATH"))
+        return;
+
+    const QByteArray appdir = qgetenv("APPDIR");
+    if (!appdir.isEmpty()) {
+        const QString p = QString::fromLocal8Bit(appdir)
+            + QStringLiteral("/usr/share/qtwebengine_dictionaries");
+        if (QDir(p).exists()) {
+            qputenv("QTWEBENGINE_DICTIONARIES_PATH", QFile::encodeName(p));
+            return;
+        }
+    }
+
+    const QString homeLocal = QDir::homePath()
+        + QStringLiteral("/.local/share/qtwebengine_dictionaries");
+    if (QFileInfo::exists(homeLocal + QStringLiteral("/en-US.bdic"))) {
+        qputenv("QTWEBENGINE_DICTIONARIES_PATH", QFile::encodeName(homeLocal));
+        return;
+    }
+
+    if (argc > 0) {
+        const QString beside = QFileInfo(QString::fromLocal8Bit(argv[0])).absolutePath()
+            + QStringLiteral("/qtwebengine_dictionaries");
+        if (QFileInfo::exists(beside + QStringLiteral("/en-US.bdic"))) {
+            qputenv("QTWEBENGINE_DICTIONARIES_PATH", QFile::encodeName(beside));
+            return;
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     bool listen = false;
@@ -242,10 +275,11 @@ int main(int argc, char *argv[])
         std::fflush(stdout);
     }
 
+    ensureSpellcheckDictionariesPath(argc, argv);
     QApplication app(argc, argv);
     setupBundledFonts();
     app.setApplicationName(QStringLiteral("Quire"));
-    app.setApplicationVersion(QStringLiteral("0.3.28"));
+    app.setApplicationVersion(QStringLiteral("0.3.31"));
     app.setOrganizationName(QStringLiteral("Sociopathletic"));
     app.setOrganizationDomain(QStringLiteral("sociopathletic.com"));
 

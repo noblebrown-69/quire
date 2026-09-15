@@ -4,6 +4,7 @@
 #include <QWebEngineView>
 #include <QWebEnginePage>
 #include <QWebEngineSettings>
+#include <QWebEngineProfile>
 #include <QEventLoop>
 #include <QTimer>
 #include <QVariant>
@@ -81,6 +82,17 @@ MonasteryEditor::MonasteryEditor(QWidget *parent) : QWidget(parent)
     settings->setAttribute(QWebEngineSettings::PluginsEnabled, false);
     settings->setAttribute(QWebEngineSettings::AutoLoadImages, true);
     settings->setAttribute(QWebEngineSettings::PrintElementBackgrounds, false);
+
+    // Qt WebEngine / Chromium spellcheck (needs en-US.bdic on QTWEBENGINE_DICTIONARIES_PATH).
+    {
+        QWebEngineProfile *profile = page->profile();
+        profile->setSpellCheckEnabled(true);
+        profile->setSpellCheckLanguages({QStringLiteral("en-US")});
+        qInfo().nospace()
+            << "spellcheck: enabled=" << profile->isSpellCheckEnabled()
+            << " languages=" << profile->spellCheckLanguages()
+            << " dictPath=" << qgetenv("QTWEBENGINE_DICTIONARIES_PATH");
+    }
 
     m_webView->load(QUrl("qrc:/editor.html"));
     m_webView->setStyleSheet("QWebEngineView { background: #3C2F2F; border: none; }");
@@ -321,8 +333,14 @@ void MonasteryEditor::applyFontFamily(const QString &name)
 
 void MonasteryEditor::refreshHighlighter()
 {
-    // Chromium native spellcheck (contenteditable spellcheck="true").
-    // Hunspell remains linked for later dictionary work.
+    // Re-assert Qt WebEngine profile spellcheck (contenteditable has spellcheck="true").
+    // Hunspell remains linked for later dictionary work; underlines use Chromium .bdic.
+    if (!m_webView || !m_webView->page() || !m_webView->page()->profile())
+        return;
+    QWebEngineProfile *profile = m_webView->page()->profile();
+    profile->setSpellCheckEnabled(true);
+    if (profile->spellCheckLanguages().isEmpty())
+        profile->setSpellCheckLanguages({QStringLiteral("en-US")});
 }
 
 void MonasteryEditor::applyTheme(const Theme &t)

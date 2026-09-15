@@ -36,7 +36,7 @@ Quire is the Linux-native version of that binder: small, portable, yours. The pr
 
 **Recent.** File → Open Recent remembers eight projects.
 
-**Portable.** New Project names the folder `Snowflake.qr` for a book titled Snowflake. The suffix marks a Quire project; the title inside stays Snowflake. The AppImage keeps novels in a `Manuscripts` folder next to itself, so the same Dropbox tree works on every Linux box you own.
+**Portable.** New Project: type a title; Quire makes `Title.qr` in Manuscripts. The suffix marks a Quire project; the title inside stays clean. Novels default to `~/Dropbox/Quire/Manuscripts` when that tree exists, so the same Dropbox shelf works on every Linux box you own.
 
 **Word count.** Status bar shows the open scene and the included manuscript: `Words: 41 / 53`.
 
@@ -71,7 +71,7 @@ The `.docx` is a fallback for Kindle Create and Amazon’s Word converter. It is
 
 ## Run
 
-A packed AppImage is the intended way to run it. Put `Quire.AppImage` wherever you keep tools. New novels default to `Manuscripts/` beside that AppImage.
+A packed AppImage is the intended way to run it. Put `Quire.AppImage` in `~/Dropbox/Quire/`. New novels default to `Manuscripts/` there (File → New Project asks for a title; Quire creates `Title.qr`).
 
 ## Build
 
@@ -87,6 +87,6 @@ If CMake cannot find WebEngineWidgets: `sudo apt install qt6-webengine-dev`.
 
 ## Status
 
-0.3.28. Compile also writes `manuscript.pdf` (5×8 paperback interior). File→Print stays CUPS/Brother; Print Current Scene… is the one-page editor print. Usable for a real draft.
+0.3.30. New Project = type a title; Quire makes Title.qr in Manuscripts. Compile also writes `manuscript.pdf` (5×8 paperback interior). File→Print stays CUPS/Brother; Print Current Scene… is the one-page editor print. Usable for a real draft.
 
 Not a corkboard. Not a port of someone else’s app. Linux first.

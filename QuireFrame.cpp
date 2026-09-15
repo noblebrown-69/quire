@@ -78,7 +78,7 @@
 
 namespace {
 
-const QString kQuireVersion = QStringLiteral("0.3.28");
+const QString kQuireVersion = QStringLiteral("0.3.30");
 
 QString canonicalOrAbs(const QString &path)
 {
@@ -1175,8 +1175,47 @@ bool writePaperbackPdfFile(const QString &pdfPath, const QString &html, QString 
     if (!stampPaperbackPageNumbers(compactSrc, numberedPath, frontPages, error))
         return false;
 
+    // KDP: paperback page count must be even. Pad one blank 5×8 leaf if odd.
+    QString finalSrc = numberedPath;
+    const int pages = pdfPageCountWithPdfinfo(numberedPath);
+    if (pages > 0 && (pages % 2) == 1) {
+        const QString blankPath = stage.filePath(QStringLiteral("blank-pad.pdf"));
+        const QString evenPath = stage.filePath(QStringLiteral("even.pdf"));
+        QProcess gsBlank;
+        gsBlank.start(QStringLiteral("gs"), QStringList{
+            QStringLiteral("-sDEVICE=pdfwrite"),
+            QStringLiteral("-dNOPAUSE"),
+            QStringLiteral("-dBATCH"),
+            QStringLiteral("-dQUIET"),
+            QStringLiteral("-dDEVICEWIDTHPOINTS=360"),
+            QStringLiteral("-dDEVICEHEIGHTPOINTS=576"),
+            QStringLiteral("-sOutputFile=") + blankPath,
+            QStringLiteral("-c"),
+            QStringLiteral("showpage"),
+        });
+        const bool blankOk = gsBlank.waitForFinished(60000) && gsBlank.exitCode() == 0
+                             && QFileInfo(blankPath).size() > 0;
+        bool united = false;
+        if (blankOk) {
+            QFile::remove(evenPath);
+            QProcess unite;
+            unite.start(QStringLiteral("pdfunite"),
+                        QStringList{numberedPath, blankPath, evenPath});
+            united = unite.waitForFinished(120000) && unite.exitCode() == 0
+                     && QFileInfo(evenPath).size() > 10000;
+            if (united)
+                finalSrc = evenPath;
+            else
+                qWarning("Paperback PDF: pdfunite even-page pad failed; shipping odd count %d",
+                         pages);
+        } else {
+            qWarning("Paperback PDF: gs blank even-page pad failed; shipping odd count %d",
+                     pages);
+        }
+    }
+
     QFile::remove(pdfPath);
-    if (!QFile::copy(numberedPath, pdfPath)) {
+    if (!QFile::copy(finalSrc, pdfPath)) {
         if (error)
             *error = QStringLiteral("Paperback PDF: could not write final PDF.");
         return false;
@@ -1747,12 +1786,45 @@ void QuireFrame::createStatusBar()
 
 QString QuireFrame::defaultManuscriptsRoot() const
 {
-    // APPIMAGE is the packed image path; applicationDirPath() points inside its mount.
+    const QString home = QFile::decodeName(qgetenv("HOME"));
+
+    // Prefer the real novels folder — never a FUSE mount or ~/.local extract-and-run sibling.
+    const QStringList preferred = {
+        home.isEmpty() ? QString() : QDir::cleanPath(home + QStringLiteral("/Dropbox/Quire/Manuscripts")),
+        QStringLiteral("/media/franklin/Storage/Dropbox/Quire/Manuscripts"),
+    };
+    for (const QString &cand : preferred) {
+        if (!cand.isEmpty() && QDir(cand).exists())
+            return canonicalOrAbs(cand);
+    }
+
+    if (!home.isEmpty()) {
+        const QString dropboxQuire = QDir::cleanPath(home + QStringLiteral("/Dropbox/Quire"));
+        if (QDir(dropboxQuire).exists()) {
+            const QString ms = dropboxQuire + QStringLiteral("/Manuscripts");
+            QDir().mkpath(ms);
+            return canonicalOrAbs(ms);
+        }
+    }
+
+    // Trusted packed AppImage only (Dropbox/Quire etc.). Skip FUSE mounts and ~/.local copies.
     const QString imagePath = QFile::decodeName(qgetenv("APPIMAGE"));
     if (!imagePath.isEmpty()) {
         const QFileInfo imageInfo(imagePath);
-        if (imageInfo.isAbsolute())
-            return QDir::cleanPath(imageInfo.absolutePath() + QStringLiteral("/Manuscripts"));
+        if (imageInfo.isAbsolute()) {
+            const QString abs = QDir::cleanPath(imageInfo.absoluteFilePath());
+            const QString dir = QDir::cleanPath(imageInfo.absolutePath());
+            const bool fuseOrTmp = abs.contains(QLatin1String("/.mount_"))
+                || dir.contains(QLatin1String("/.mount_"))
+                || dir.startsWith(QLatin1String("/tmp/"));
+            bool localSibling = false;
+            if (!home.isEmpty()) {
+                const QString localRoot = QDir::cleanPath(home + QStringLiteral("/.local"));
+                localSibling = (dir == localRoot || dir.startsWith(localRoot + QLatin1Char('/')));
+            }
+            if (!fuseOrTmp && !localSibling)
+                return QDir::cleanPath(dir + QStringLiteral("/Manuscripts"));
+        }
     }
 
     // Development builds retain the source-tree Manuscripts location.
@@ -1760,7 +1832,6 @@ QString QuireFrame::defaultManuscriptsRoot() const
         QCoreApplication::applicationDirPath() + QStringLiteral("/../Manuscripts"));
     if (QDir(beside).exists())
         return canonicalOrAbs(beside);
-    const QString home = QFile::decodeName(qgetenv("HOME"));
     if (!home.isEmpty())
         return QDir::cleanPath(home + QStringLiteral("/Quire/Manuscripts"));
     return QStringLiteral("Manuscripts");
@@ -1992,19 +2063,64 @@ bool QuireFrame::openProject(const QString &projectDir, bool remember)
 
 void QuireFrame::onNewProject()
 {
-    const QString parent = QFileDialog::getExistingDirectory(
-        this, QStringLiteral("Parent folder for the new project"),
-        defaultManuscriptsRoot());
-    if (parent.isEmpty())
+    QString parent = defaultManuscriptsRoot();
+    QDir().mkpath(parent);
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("New Project"));
+    auto *layout = new QVBoxLayout(&dlg);
+
+    auto *titleEdit = new QLineEdit(QStringLiteral("Untitled Novel"), &dlg);
+    titleEdit->setPlaceholderText(QStringLiteral("Novel title"));
+    titleEdit->selectAll();
+    auto *form = new QFormLayout;
+    form->addRow(QStringLiteral("Title:"), titleEdit);
+    layout->addLayout(form);
+
+    auto *locLabel = new QLabel(&dlg);
+    locLabel->setWordWrap(true);
+    layout->addWidget(locLabel);
+
+    auto *chooseBtn = new QPushButton(QStringLiteral("Choose folder…"), &dlg);
+    layout->addWidget(chooseBtn, 0, Qt::AlignLeft);
+
+    const auto refreshLocation = [&]() {
+        const QString entered = titleEdit->text().trimmed();
+        const QString folder = projectFolderName(
+            entered.isEmpty() ? QStringLiteral("Untitled Novel") : entered);
+        locLabel->setText(
+            QStringLiteral("It will live in %1/%2")
+                .arg(QDir::toNativeSeparators(parent), folder));
+    };
+    refreshLocation();
+    QObject::connect(titleEdit, &QLineEdit::textChanged, &dlg, [&](const QString &) {
+        refreshLocation();
+    });
+    QObject::connect(chooseBtn, &QPushButton::clicked, &dlg, [&]() {
+        const QString chosen = QFileDialog::getExistingDirectory(
+            &dlg, QStringLiteral("Choose folder"), parent);
+        if (chosen.isEmpty())
+            return;
+        parent = chosen;
+        refreshLocation();
+    });
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    layout->addWidget(buttons);
+    titleEdit->setFocus(Qt::OtherFocusReason);
+
+    if (dlg.exec() != QDialog::Accepted)
         return;
-    bool ok = false;
-    const QString entered = QInputDialog::getText(
-        this, QStringLiteral("New Project"),
-        QStringLiteral("Novel title (.qr marks the project folder):"),
-        QLineEdit::Normal, QStringLiteral("Untitled Novel"), &ok);
+
+    const QString entered = titleEdit->text();
     const QString title = projectTitleFromInput(entered);
-    if (!ok || title.isEmpty())
+    if (title.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Quire"),
+                             QStringLiteral("Title cannot be empty."));
         return;
+    }
     const QString path = parent + QLatin1Char('/') + projectFolderName(entered);
     if (QFileInfo::exists(path)) {
         QMessageBox::warning(this, QStringLiteral("Quire"),
@@ -2457,7 +2573,7 @@ void QuireFrame::onImportScrivener()
     }
 
     const QString parent = QFileDialog::getExistingDirectory(
-        this, QStringLiteral("Parent folder for the new Quire project"),
+        this, QStringLiteral("Choose folder for the new Quire project"),
         defaultManuscriptsRoot());
     if (parent.isEmpty())
         return;
@@ -2944,7 +3060,13 @@ void QuireFrame::runListenProof()
     }
 
     std::fprintf(stdout, "editor: monastery-sep1\n");
-    std::fprintf(stdout, "default-root: %s\n", qPrintable(defaultManuscriptsRoot()));
+    {
+        const QString root = defaultManuscriptsRoot();
+        std::fprintf(stdout, "default-root: %s\n", qPrintable(root));
+        const bool novelsRoot = root.contains(QStringLiteral("/Dropbox/Quire/Manuscripts"))
+            || root.endsWith(QStringLiteral("/Quire/Manuscripts"));
+        std::fprintf(stdout, "default-root-novels: %s\n", novelsRoot ? "ok" : "fallback");
+    }
 
     const QString suffixParent = QStringLiteral("/tmp/quire-suffix-proof-%1")
                                      .arg(QCoreApplication::applicationPid());

@@ -101,6 +101,39 @@ copy_hunspell() {
     fi
 }
 
+copy_bdic() {
+    # Chromium/Qt WebEngine spellcheck dictionaries (.bdic), not raw Hunspell.
+    local dest="AppDir/usr/share/qtwebengine_dictionaries"
+    mkdir -p "$dest"
+    local src_bdic=""
+    if [ -f dictionaries/en-US.bdic ]; then
+        src_bdic="dictionaries/en-US.bdic"
+    elif [ -f "$HOME/.local/share/qtwebengine_dictionaries/en-US.bdic" ]; then
+        src_bdic="$HOME/.local/share/qtwebengine_dictionaries/en-US.bdic"
+    else
+        local convert="$HOME/.local/opt/qt6-webengine/usr/lib/qt6/libexec/qwebengine_convert_dict"
+        if [ -x "$convert" ] && [ -f /usr/share/hunspell/en_US.dic ] && [ -f /usr/share/hunspell/en_US.aff ]; then
+            local tmp
+            tmp="$(mktemp -d)"
+            cp /usr/share/hunspell/en_US.aff "$tmp/en-US.aff"
+            cp /usr/share/hunspell/en_US.dic "$tmp/en-US.dic"
+            if "$convert" "$tmp/en-US.dic" "$tmp/en-US.bdic"; then
+                mkdir -p dictionaries
+                cp -a "$tmp/en-US.bdic" dictionaries/en-US.bdic
+                src_bdic="dictionaries/en-US.bdic"
+            fi
+            rm -rf "$tmp"
+        fi
+    fi
+    if [ -n "$src_bdic" ] && [ -f "$src_bdic" ]; then
+        cp -a "$src_bdic" "$dest/en-US.bdic"
+        echo "Bundled spellcheck dictionary: $dest/en-US.bdic"
+    else
+        echo "WARNING: en-US.bdic not found; WebEngine spellcheck underlines may be missing."
+    fi
+}
+
+
 copy_webengine() {
     echo "Copying Qt WebEngine process, resources, locales, and libraries into AppDir..."
     local we_prefix
@@ -181,6 +214,7 @@ has_webengine() {
 }
 
 copy_hunspell
+copy_bdic
 
 if ! has_webengine; then
     echo "WARNING: QtWebEngineProcess or qtwebengine_resources.pak missing from AppDir."
@@ -191,14 +225,17 @@ if ! has_webengine; then
         run_linuxdeploy extract
     fi
     copy_hunspell
+    copy_bdic
     if ! has_webengine; then
         echo "WebEngine files still missing after re-run; copying again and rebuilding AppImage..."
         copy_webengine
         copy_hunspell
+        copy_bdic
         if ! run_linuxdeploy; then
             run_linuxdeploy extract
         fi
         copy_hunspell
+        copy_bdic
     fi
 fi
 
@@ -227,6 +264,9 @@ elif [ -d "\$HERE/usr/resources" ]; then
     export QTWEBENGINE_RESOURCES_PATH="\$HERE/usr/resources"
 fi
 export QTWEBENGINE_LOCALES_PATH="\$HERE/usr/share/qt6/translations/qtwebengine_locales"
+if [ -d "\$HERE/usr/share/qtwebengine_dictionaries" ]; then
+    export QTWEBENGINE_DICTIONARIES_PATH="\$HERE/usr/share/qtwebengine_dictionaries"
+fi
 export QTWEBENGINE_DISABLE_SANDBOX=1
 if [ -f "\$HERE/usr/share/fonts/truetype/gelasio/fonts.conf" ]; then
   export FONTCONFIG_FILE="\$HERE/usr/share/fonts/truetype/gelasio/fonts.conf"
@@ -275,6 +315,7 @@ resquash_appimage() {
                 run_linuxdeploy extract
             fi
             copy_hunspell
+            copy_bdic
             if [ -L AppDir/AppRun ]; then
                 echo "linuxdeploy recreated AppRun symlink; restoring script..."
                 install_qtwebengine_apprun "$bin_name"
@@ -310,6 +351,7 @@ resquash_appimage() {
 # shipped image is not the incomplete linuxdeploy first-pass (~102-118MB).
 copy_webengine
 copy_hunspell
+copy_bdic
 
 # Rename linuxdeploy output (desktop Name=Quire)
 if [ -f Quire-x86_64.AppImage ]; then
