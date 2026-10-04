@@ -82,7 +82,7 @@ private slots:
     void onTreeSelectionChanged(const QItemSelection &selected, const QItemSelection &deselected);
     void onBinderContextMenu(const QPoint &pos);
     void onFileRenamed(const QString &path, const QString &oldName, const QString &newName);
-    void applyTheme(ThemeId id);
+    void applyTheme(ThemeId id, bool persist = true);
 
 private:
     void createActions();
@@ -176,6 +176,7 @@ private:
     QLabel *m_dirtyLabel = nullptr;
     int m_manuscriptWordCount = 0;
     QActionGroup *m_themeGroup = nullptr;
+    QAction *m_followBushidosAction = nullptr;
     Theme m_currentTheme;
 
     QAction *m_newProjectAction = nullptr;
