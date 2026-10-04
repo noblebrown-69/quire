@@ -118,6 +118,30 @@
   #editor table { border-collapse: collapse; width: 100%; margin: 0.6em 0 0.8em; }
   #editor th, #editor td { border: 1px solid #ddd; padding: 0.3em 0.5em; vertical-align: top; }
   #editor th { background: #f0f0f0; font-weight: bold; text-align: left; }
+  /* BushidOS Neon: only active when <html> has class theme-neon (set by applyTheme). */
+  html.theme-neon #editor { caret-color: #00e5ff; }
+  html.theme-neon ::selection { background: #c0176e; color: #ffffff; }
+  html.theme-neon #editor h1, html.theme-neon #editor h2 { color: #ff2e88; }
+  html.theme-neon #editor h3, html.theme-neon #editor h4, html.theme-neon #editor h5, html.theme-neon #editor h6 { color: #00e5ff; }
+  html.theme-neon #editor a { color: #00e5ff; text-decoration: underline; text-decoration-color: rgba(0, 229, 255, 0.5); }
+  html.theme-neon #editor a:visited { color: #b388ff; }
+  html.theme-neon #editor code, html.theme-neon #editor pre { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; background: #15121f; color: #ffcc4d; border: 1px solid #3a3350; border-radius: 4px; }
+  html.theme-neon #editor code { padding: 0.05em 0.3em; }
+  html.theme-neon #editor pre { padding: 0.6em 0.8em; overflow-x: auto; }
+  html.theme-neon #editor pre code { border: none; padding: 0; background: none; }
+  html.theme-neon #editor blockquote { border-left: 3px solid #ff2e88; margin-left: 0; padding-left: 1em; color: #c9c6dc; }
+  html.theme-neon #editor hr { border: none; border-top: 1px solid #3a3350; }
+  html.theme-neon .page-break { border-top-color: #3a3350; }
+  html.theme-neon #editor th, html.theme-neon #editor td { border-color: #3a3350; }
+  html.theme-neon #editor th { background: #17141f; color: #ecebf7; }
+  html.theme-neon li.task input[type=checkbox] { accent-color: #00e5ff; }
+  html.theme-neon::-webkit-scrollbar, html.theme-neon ::-webkit-scrollbar { width: 12px; height: 12px; background: #121019; }
+  html.theme-neon::-webkit-scrollbar-thumb, html.theme-neon ::-webkit-scrollbar-thumb { background: #4a4262; border-radius: 4px; border: 2px solid #121019; }
+  html.theme-neon::-webkit-scrollbar-thumb:hover, html.theme-neon ::-webkit-scrollbar-thumb:hover { background: #298ba9; }
+  html.theme-neon::-webkit-scrollbar-corner, html.theme-neon ::-webkit-scrollbar-corner { background: #121019; }
+  @media print {
+    html.theme-neon #editor * { color: #000000 !important; background: transparent !important; border-color: #999999 !important; }
+  }
   @media print {
     html, body, .page, #editor {
       background: #ffffff !important;
@@ -327,6 +351,8 @@ function isDirty() {
 function applyTheme(t) {
   if (!t) return;
   const root = document.documentElement;
+  Array.from(root.classList).forEach(function(c) { if (c.indexOf('theme-') === 0) root.classList.remove(c); });
+  if (t.id) root.classList.add('theme-' + t.id);
   const desk = t.desk || t.pageBg || '#3C2F2F';
   const pageBg = t.pageAsObject ? (t.pageBg || '#F5E8C7') : desk;
   root.style.setProperty('--desk', desk);

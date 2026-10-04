@@ -8,7 +8,8 @@ enum class ThemeId {
     Leather,
     WordPerfect,
     Matrix,
-    Amber
+    Amber,
+    Neon
 };
 
 struct Theme {
@@ -39,5 +40,11 @@ Theme themeForId(ThemeId id);
 Theme themeFromSettingsId(const QString &id);
 ThemeId themeIdFromString(const QString &id);
 QVector<Theme> allThemes();
+
+// BushidOS integration: GTK theme name of the desktop (xfconf on XFCE, else gsettings / settings.ini),
+// whether it is the BushidOS Neon theme, and the extra Neon-only Qt stylesheet.
+QString bushidosGtkThemeName();
+bool bushidosNeonActive();
+QString neonExtraQss();
 
 #endif // THEME_H
