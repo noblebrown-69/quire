@@ -99,6 +99,7 @@ static void setupBundledFonts()
             xml += "<?xml version=\"1.0\"?>\n";
             xml += "<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n";
             xml += "<fontconfig>\n";
+            xml += "  <include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>\n";
             xml += "  <dir>" + fontDir.toUtf8() + "</dir>\n";
             xml += "  <alias binding=\"same\">\n";
             xml += "    <family>Georgia</family>\n";

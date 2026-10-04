@@ -49,7 +49,9 @@ chmod +x "$LINUXDEPLOY" "$LINUXDEPLOY_QT"
 export QMAKE=/usr/bin/qmake6
 export APPIMAGE_EXTRACT_AND_RUN=1
 export PATH="$HOME/.local/opt/qt6-webengine/usr/lib/qt6/libexec:$(dirname "$LINUXDEPLOY"):$PWD:$PATH"
-export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/qt6${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Extracted Qt6 WebEngine prefix (libQt6QuickWidgets etc.) so linuxdeploy can resolve deps; same as Shoin's script.
+QTWE_LIB="$HOME/.local/opt/qt6-webengine/usr/lib/x86_64-linux-gnu"
+export LD_LIBRARY_PATH="${QTWE_LIB}:/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/qt6${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # Encourage linuxdeploy-plugin-qt to pull extra WebEngine-related plugins
 export EXTRA_QT_PLUGINS="${EXTRA_QT_PLUGINS:-webview;qmltooling;position}"
 
