@@ -280,7 +280,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     setupBundledFonts();
     app.setApplicationName(QStringLiteral("Quire"));
-    app.setApplicationVersion(QStringLiteral("0.3.31"));
+    app.setApplicationVersion(QStringLiteral("0.3.32"));
     app.setOrganizationName(QStringLiteral("Sociopathletic"));
     app.setOrganizationDomain(QStringLiteral("sociopathletic.com"));
 

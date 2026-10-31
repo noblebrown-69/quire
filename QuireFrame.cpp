@@ -1263,7 +1263,7 @@ QuireFrame::QuireFrame(QWidget *parent)
     , m_currentTheme(themeForId(ThemeId::Leather))
 {
     setWindowTitle(QStringLiteral("Quire"));
-    setWindowIcon(QIcon(QStringLiteral(":/icons/monastery.png")));
+    setWindowIcon(QIcon(QStringLiteral(":/icons/quire.png")));
     resize(1280, 820);
 
     createActions();
