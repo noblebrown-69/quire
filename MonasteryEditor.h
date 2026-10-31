@@ -54,6 +54,12 @@ private:
     QString m_cachedSelFamily;
     int m_cachedSelPt = 0;
     bool m_isLoaded = false;
+    // lite: pending content applied on loadFinished; capped retry; throttled HTML pulls
+    QString m_pendingHtml;
+    bool m_hasPendingHtml = false;
+    int m_setHtmlAttempts = 0;
+    qint64 m_lastHtmlPullMs = 0;
+    void applyPendingHtml();
     bool m_dirty = false;
 };
 

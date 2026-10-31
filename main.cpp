@@ -214,8 +214,32 @@ static void ensureSpellcheckDictionariesPath(int argc, char *argv[])
     }
 }
 
+// lite: low-RAM QtWebEngine defaults (Qt 6.4 / Chromium 102). Disable with
+// --full or QUIRE_FULL=1 (or WEBENGINE_FULL=1). Flags already present are not duplicated.
+static void applyLiteWebEngineFlags(int argc, char *argv[])
+{
+    for (int i = 1; i < argc; ++i)
+        if (qstrcmp(argv[i], "--full") == 0)
+            return;
+    if (qEnvironmentVariableIntValue("QUIRE_FULL") || qEnvironmentVariableIntValue("WEBENGINE_FULL"))
+        return;
+    QByteArray flags = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+    const char *lite[] = {
+        "--renderer-process-limit=1",
+        "--disable-background-networking",
+        "--js-flags=--max-old-space-size=128",
+    };
+    for (const char *f : lite) {
+        const QByteArray key = QByteArray(f).split('=').first();
+        if (!flags.contains(key))
+            flags += (flags.isEmpty() ? "" : " ") + QByteArray(f);
+    }
+    qputenv("QTWEBENGINE_CHROMIUM_FLAGS", flags);
+}
+
 int main(int argc, char *argv[])
 {
+    applyLiteWebEngineFlags(argc, argv);
     bool listen = false;
     bool importScriv = false;
     bool compileOneShot = false;

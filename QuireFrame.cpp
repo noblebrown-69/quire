@@ -1,3 +1,5 @@
+#include <memory>
+#include <QPointer>
 #include "QuireFrame.h"
 #include "MonasteryEditor.h"
 #include "EpubWriter.h"
@@ -367,22 +369,26 @@ int runJsInt(QWebEnginePage *page, const QString &js, int fallback = 0)
 {
     if (!page)
         return fallback;
-    int result = fallback;
-    bool done = false;
+    // UAF fix: callback may arrive after the 1.5 s timeout; share state by value.
+    struct State { bool done = false; int result = 0; QPointer<QEventLoop> loop; };
+    auto st = std::make_shared<State>();
+    st->result = fallback;
     QEventLoop loop;
+    st->loop = &loop;
     QTimer safety;
     safety.setSingleShot(true);
     QObject::connect(&safety, &QTimer::timeout, &loop, &QEventLoop::quit);
-    page->runJavaScript(js, [&](const QVariant &v) {
-        result = v.toInt();
-        done = true;
-        loop.quit();
+    page->runJavaScript(js, [st](const QVariant &v) {
+        st->result = v.toInt();
+        st->done = true;
+        if (st->loop)
+            st->loop->quit();
     });
-    if (!done) {
+    if (!st->done) {
         safety.start(1500);
         loop.exec();
     }
-    return result;
+    return st->result;
 }
 
 enum class MatterKind { Front, Middle, Back };
@@ -3367,17 +3373,25 @@ bool QuireFrame::persistCurrentScene(bool markCleanAfter)
     if (m_currentScenePath.isEmpty() || !m_editor)
         return false;
 
-    QString html;
+    // UAF fix: fetchHtml's callback may fire after the 2 s timeout returned.
+    struct State { bool done = false; QString html; QPointer<QEventLoop> loop; };
+    auto st = std::make_shared<State>();
     QEventLoop loop;
+    st->loop = &loop;
     QTimer safety;
     safety.setSingleShot(true);
     QObject::connect(&safety, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_editor->fetchHtml([&](const QString &h) {
-        html = h;
-        loop.quit();
+    m_editor->fetchHtml([st](const QString &h) {
+        st->html = h;
+        st->done = true;
+        if (st->loop)
+            st->loop->quit();
     });
-    safety.start(2000);
-    loop.exec();
+    if (!st->done) {
+        safety.start(2000);
+        loop.exec();
+    }
+    QString html = st->html;
     if (html.trimmed().isEmpty())
         html = m_editor->lastGoodHtml();
 

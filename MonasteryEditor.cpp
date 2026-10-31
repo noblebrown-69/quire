@@ -7,6 +7,10 @@
 #include <QWebEngineProfile>
 #include <QEventLoop>
 #include <QTimer>
+#include <memory>
+#include <QPointer>
+#include <QDateTime>
+// LITE_PATCH
 #include <QVariant>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -88,6 +92,10 @@ MonasteryEditor::MonasteryEditor(QWidget *parent) : QWidget(parent)
         QWebEngineProfile *profile = page->profile();
         profile->setSpellCheckEnabled(true);
         profile->setSpellCheckLanguages({QStringLiteral("en-US")});
+        // lite: local qrc page; keep caches tiny and in memory
+        profile->setHttpCacheType(QWebEngineProfile::MemoryHttpCache);
+        profile->setHttpCacheMaximumSize(4 * 1024 * 1024);
+        profile->setPersistentCookiesPolicy(QWebEngineProfile::NoPersistentCookies);
         qInfo().nospace()
             << "spellcheck: enabled=" << profile->isSpellCheckEnabled()
             << " languages=" << profile->spellCheckLanguages()
@@ -101,7 +109,7 @@ MonasteryEditor::MonasteryEditor(QWidget *parent) : QWidget(parent)
     setLayout(layout);
 
     m_pollTimer = new QTimer(this);
-    m_pollTimer->setInterval(900);
+    m_pollTimer->setInterval(1500);  // lite: was 900 ms
     connect(m_pollTimer, &QTimer::timeout, this, &MonasteryEditor::pollEditorState);
 
     connect(page, &QWebEnginePage::loadFinished, this, [this](bool ok) {
@@ -112,6 +120,7 @@ MonasteryEditor::MonasteryEditor(QWidget *parent) : QWidget(parent)
                 "if (ed && !ed.innerHTML.trim()) { ed.innerHTML = '<p></p>'; }"
             );
             m_pollTimer->start();
+            applyPendingHtml();
             pollEditorState();
         }
         emit ready(ok);
@@ -129,30 +138,43 @@ void MonasteryEditor::pollEditorState()
 {
     if (!m_isLoaded)
         return;
-
-    m_webView->page()->runJavaScript("getWordCount();", [this](const QVariant &result) {
-        const int count = result.toInt();
-        if (count != m_cachedWordCount) {
-            m_cachedWordCount = count;
-            emit wordCountChanged(count);
-        }
-    });
-
+    // lite: skip work while hidden/minimized; one JS round-trip instead of three,
+    // and only copy the full innerHTML when the document is dirty (max every 3 s)
+    // or as a slow 30 s refresh. Previously ~the whole document crossed IPC every 900 ms.
+    if (!isVisible() || (window() && window()->isMinimized()))
+        return;
     m_webView->page()->runJavaScript(
-        "document.getElementById('editor') ? document.getElementById('editor').innerHTML : '';",
-        [this](const QVariant &result) {
-            considerHtmlCache(result.toString());
+        QStringLiteral("[ (typeof getWordCount==='function'?getWordCount():0), !!window.monasteryDirty ]"),
+        [this, guard = QPointer<MonasteryEditor>(this)](const QVariant &result) {
+        if (!guard) return;
+            const QVariantList l = result.toList();
+            if (l.size() < 2)
+                return;
+            const int count = l.at(0).toInt();
+            if (count != m_cachedWordCount) {
+                m_cachedWordCount = count;
+                emit wordCountChanged(count);
+            }
+            const bool dirty = l.at(1).toBool();
+            if (dirty != m_dirty) {
+                m_dirty = dirty;
+                emit dirtyChanged(m_dirty);
+            }
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            const qint64 age = now - m_lastHtmlPullMs;
+            if ((dirty && age >= 3000) || age >= 30000) {
+                m_lastHtmlPullMs = now;
+                m_webView->page()->runJavaScript(
+                    "document.getElementById('editor') ? document.getElementById('editor').innerHTML : '';",
+                    [this, guard](const QVariant &r) {
+                        if (!guard) return;
+                        considerHtmlCache(r.toString());
+                    });
+            }
         });
 
-    m_webView->page()->runJavaScript("!!window.monasteryDirty;", [this](const QVariant &result) {
-        const bool dirty = result.toBool();
-        if (dirty != m_dirty) {
-            m_dirty = dirty;
-            emit dirtyChanged(m_dirty);
-        }
-    });
-
-    pollSelectionFont();
+    if (m_webView->hasFocus() || (m_webView->focusProxy() && m_webView->focusProxy()->hasFocus()))
+        pollSelectionFont();
 }
 
 void MonasteryEditor::pollSelectionFont()
@@ -161,7 +183,8 @@ void MonasteryEditor::pollSelectionFont()
         return;
     m_webView->page()->runJavaScript(
         QStringLiteral("typeof getSelectionFont==='function'?getSelectionFont():null"),
-        [this](const QVariant &result) {
+        [this, guard = QPointer<MonasteryEditor>(this)](const QVariant &result) {
+        if (!guard) return;
             const FontProbe p = parseFontProbe(result);
             if (p.family.isEmpty() && p.pt <= 0)
                 return;
@@ -238,7 +261,8 @@ void MonasteryEditor::fetchHtml(const std::function<void(const QString &)> &call
 
     m_webView->page()->runJavaScript(
         "document.getElementById('editor') ? document.getElementById('editor').innerHTML : '';",
-        [this, callback](const QVariant &v) {
+        [this, callback, guard = QPointer<MonasteryEditor>(this)](const QVariant &v) {
+        if (!guard) return;
             const QString html = v.toString();
             considerHtmlCache(html);
             if (callback)
@@ -246,11 +270,34 @@ void MonasteryEditor::fetchHtml(const std::function<void(const QString &)> &call
         });
 }
 
+void MonasteryEditor::applyPendingHtml()
+{
+    if (!m_hasPendingHtml || !m_isLoaded)
+        return;
+    m_hasPendingHtml = false;
+    m_setHtmlAttempts = 0;
+    const QString html = m_pendingHtml;
+    m_pendingHtml.clear();
+    setHtml(html);
+}
+
 void MonasteryEditor::setHtml(const QString &html)
 {
     m_cachedHtml = html;
     if (!m_isLoaded) {
-        QTimer::singleShot(80, this, [this, html]() { setHtml(html); });
+        // lite: keep only the latest content; loadFinished applies it. A capped,
+        // backed-off retry (80 ms -> 500 ms, max 40 tries ~= 15 s) covers a missed signal
+        // instead of re-queuing a full copy of the document every 80 ms forever.
+        m_pendingHtml = html;
+        const bool firstQueue = !m_hasPendingHtml;
+        m_hasPendingHtml = true;
+        if (firstQueue)
+            m_setHtmlAttempts = 0;
+        if (m_setHtmlAttempts < 40) {
+            const int delay = qMin(500, 80 << qMin(m_setHtmlAttempts, 3));
+            ++m_setHtmlAttempts;
+            QTimer::singleShot(delay, this, [this]() { applyPendingHtml(); if (m_hasPendingHtml && !m_isLoaded) setHtml(m_pendingHtml); });
+        }
         return;
     }
 
@@ -270,7 +317,8 @@ void MonasteryEditor::requestWordCount(const std::function<void(int)> &callback)
             callback(m_cachedWordCount);
         return;
     }
-    m_webView->page()->runJavaScript("getWordCount();", [this, callback](const QVariant &v) {
+    m_webView->page()->runJavaScript("getWordCount();", [this, callback, guard = QPointer<MonasteryEditor>(this)](const QVariant &v) {
+        if (!guard) return;
         m_cachedWordCount = v.toInt();
         if (callback)
             callback(m_cachedWordCount);
@@ -282,21 +330,32 @@ bool MonasteryEditor::queryDirtyNow()
     if (!m_isLoaded)
         return m_dirty;
 
-    bool result = m_dirty;
+    // UAF fix: the JS callback can arrive after the 2 s safety timeout returned
+    // from this frame; it must not touch stack locals. Share state by value.
+    struct State { bool done = false; bool result = false; QPointer<QEventLoop> loop; };
+    auto st = std::make_shared<State>();
+    st->result = m_dirty;
     QEventLoop loop;
+    st->loop = &loop;
     QTimer safety;
     safety.setSingleShot(true);
     QObject::connect(&safety, &QTimer::timeout, &loop, &QEventLoop::quit);
 
-    m_webView->page()->runJavaScript("!!window.monasteryDirty;", [&](const QVariant &v) {
-        result = v.toBool();
-        m_dirty = result;
-        loop.quit();
-    });
+    m_webView->page()->runJavaScript("!!window.monasteryDirty;",
+        [st, guard = QPointer<MonasteryEditor>(this)](const QVariant &v) {
+            st->result = v.toBool();
+            st->done = true;
+            if (guard)
+                guard->m_dirty = st->result;
+            if (st->loop)
+                st->loop->quit();
+        });
 
-    safety.start(2000);
-    loop.exec();
-    return result;
+    if (!st->done) {
+        safety.start(2000);
+        loop.exec();
+    }
+    return st->result;
 }
 
 void MonasteryEditor::markClean()
